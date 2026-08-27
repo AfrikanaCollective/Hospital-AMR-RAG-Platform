@@ -1,0 +1,75 @@
+{
+  "$comment": "Fixed patient-record schema (PRD-002, PRD-003, PRD-A3). Kept in sync with backend/app/schemas/record.py (PatientRecord). Regenerate with: python -c \"import json,app.schemas.record as r; print(json.dumps(r.PatientRecord.model_json_schema(), indent=2))\". Every field is PHI by default (PRD-080).",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "required": ["record_id", "mrn", "given_name", "family_name"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "dataset_provenance": {"type": ["string", "null"], "description": "synthetic-generator-v1 for project-generated batches; unmarked 'real-looking' batches are rejected on ingest"},
+    "record_id": {"type": "string"},
+    "mrn": {"type": "string", "description": "synthetic medical record number"},
+    "given_name": {"type": "string"},
+    "family_name": {"type": "string"},
+    "date_of_birth": {"type": ["string", "null"], "format": "date"},
+    "sex": {"type": ["string", "null"]},
+    "encounter": {
+      "type": "object",
+      "properties": {
+        "admitted_at": {"type": ["string", "null"], "format": "date-time"},
+        "ward": {"type": ["string", "null"]},
+        "care_setting": {"type": ["string", "null"], "description": "e.g. ED, general ward, HDU, ICU"},
+        "presenting_complaint": {"type": ["string", "null"]},
+        "triage_category": {"type": ["string", "null"]}
+      }
+    },
+    "problems": {"type": "array", "items": {"type": "string"}},
+    "allergies": {"type": "array", "items": {"type": "string"}},
+    "medications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "dose": {"type": ["string", "null"]},
+          "route": {"type": ["string", "null"]},
+          "frequency": {"type": ["string", "null"]},
+          "started_at": {"type": ["string", "null"], "format": "date-time"},
+          "active": {"type": "boolean"}
+        }
+      }
+    },
+    "vitals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "recorded_at": {"type": ["string", "null"], "format": "date-time"},
+          "heart_rate_bpm": {"type": ["number", "null"]},
+          "resp_rate_bpm": {"type": ["number", "null"]},
+          "systolic_bp_mmhg": {"type": ["number", "null"]},
+          "diastolic_bp_mmhg": {"type": ["number", "null"]},
+          "temperature_c": {"type": ["number", "null"]},
+          "spo2_percent": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "labs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["analyte"],
+        "properties": {
+          "analyte": {"type": "string"},
+          "value": {"type": ["number", "null"]},
+          "unit": {"type": ["string", "null"]},
+          "collected_at": {"type": ["string", "null"], "format": "date-time"},
+          "reference_low": {"type": ["number", "null"]},
+          "reference_high": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "clinical_notes": {"type": ["string", "null"], "description": "free text; encrypted at rest; PHI"},
+    "consent_flags": {"type": "object", "additionalProperties": {"type": "boolean"}}
+  }
+}

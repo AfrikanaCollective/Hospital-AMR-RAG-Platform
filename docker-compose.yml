@@ -1,0 +1,128 @@
+# Hospital RAG Platform — local self-hosted deployment (ARCH-036 / PRD-106).
+# Profiles:  core  = api, worker, redis, postgres, qdrant, proxy, frontend
+#            dev   = core + llm-gateway stub + seed helpers
+#            full  = dev + keycloak + review-webhook echo
+# Only the proxy publishes a port. Core flows need no external network.
+
+x-backend-env: &backend-env
+  env_file: .env
+
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    profiles: ["core", "dev", "full"]
+    depends_on: [api, frontend]
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/tls:/etc/nginx/tls:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+    profiles: ["core", "dev", "full"]
+    expose: ["80"]
+
+  api:
+    build:
+      context: ./backend
+    <<: *backend-env
+    profiles: ["core", "dev", "full"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+    expose: ["8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    user: "10001:10001"
+
+  worker:
+    build:
+      context: ./backend
+    <<: *backend-env
+    profiles: ["core", "dev", "full"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "-l", "info"]
+    user: "10001:10001"
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["core", "dev", "full"]
+    command: ["redis-server", "--requirepass", "redis_pw"]
+    expose: ["6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_pw", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["core", "dev", "full"]
+    environment:
+      POSTGRES_DB: hospital_rag
+      POSTGRES_USER: hrag_admin
+      POSTGRES_PASSWORD: hrag_admin_pw
+    expose: ["5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hrag_admin -d hospital_rag"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    profiles: ["core", "dev", "full"]
+    environment:
+      QDRANT__SERVICE__API_KEY: change-me-in-real-deploy
+    expose: ["6333"]
+    volumes: ["qdrant-data:/qdrant/storage"]
+
+  llm-gateway:
+    build:
+      context: ./backend
+    <<: *backend-env
+    profiles: ["dev", "full"]
+    command: ["python", "-m", "app.llm.stub_server"]
+    expose: ["8080"]
+    # Offline deterministic fake of the self-hosted gateway (canned completions,
+    # echo embeddings) so dev/CI need no network. Real deploys point
+    # LLM_GATEWAY_URL at the actual self-hosted gateway and drop this service.
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["full"]
+    command: ["start-dev"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    expose: ["8080"]
+
+  review-webhook:
+    image: mendhak/http-https-echo:latest
+    profiles: ["full"]
+    expose: ["8080"]
+
+volumes:
+  pg-data:
+  redis-data:
+  qdrant-data:

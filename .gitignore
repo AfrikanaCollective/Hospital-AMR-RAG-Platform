@@ -1,0 +1,52 @@
+# --- project ---
+prompt.txt
+
+# --- secrets / local config ---
+.env
+.env.*
+!.env.example
+deploy/tls/*.pem
+deploy/tls/*.key
+deploy/tls/*.crt
+*.key
+**/secrets/*
+!**/secrets/.gitkeep
+
+# --- generated data (never commit; synthetic only anyway) ---
+data/synthetic_records/*
+!data/synthetic_records/.gitkeep
+data/sample_guidelines/*
+!data/sample_guidelines/.gitkeep
+data/eval_snapshots/*
+!data/eval_snapshots/.gitkeep
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite3
+
+# --- node / frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# --- editors / os ---
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# --- docker / runtime volumes (if bind-mounted locally) ---
+.docker-data/
