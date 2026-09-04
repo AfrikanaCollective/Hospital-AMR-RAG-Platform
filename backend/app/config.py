@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     qdrant_guideline_collection: str = "guideline_chunks_v1"
     patient_record_vectors_enabled: bool = False
 
+    # ── guideline corpus + ingestion (ARCH-038 / ARCH §5.1 / DEVIATIONS #26, #28) ──
+    sample_guidelines_dir: str = "data/sample_guidelines"
+    guidelines_allow_synthetic: bool = False  # opt-in CI-only synthetic fixture set
+    ingest_min_parse_quality: float = 0.60  # below -> document badged + held for admin review
+
+    # ── patient records (ARCH-039 / DEVIATIONS #30, #33, #34) ──
+    patient_records_dir: str = "data/patient_records"
+    record_domain: str = "neonatal"  # neonatal | adult_inpatient — MUST match the ingested corpus domain
+    deidentified_attestation_required: bool = True  # de-identified datasets need a complete DATASET.md attestation
+
     # ── database / async (ARCH-007 / ARCH-008) ──
     database_url: str = "postgresql+psycopg://hrag_app:hrag_app_pw@postgres:5432/hospital_rag"
     redis_url: str = "redis://:redis_pw@redis:6379/0"

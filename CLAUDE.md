@@ -46,9 +46,15 @@ quietly work around it.
 
 These come from the build constraints (PRD-C1…C8) and are enforced by tests.
 
-1. **No real PHI, ever.** All data is synthetic and project-generated. Every
-   patient-record field is PHI by default. Never ask for, accept, invent, or
-   commit real patient data.
+1. **Patient data is `synthetic` or operator-attested `deidentified` — nothing
+   else** (ARCH-039 / DEVIATIONS.md #33). Synthetic data carries the
+   `synthetic-generator-v1` marker; a de-identified dataset is admitted only
+   with a complete `DATASET.md` attestation and then handled **exactly as PHI**
+   (encryption, RBAC, RLS, audit, no egress, no training). Every patient-record
+   field is PHI by default. Never ask for, accept, invent, or **commit** any
+   patient dataset (dataset files are `.gitignore`d — only `DATASET.md` /
+   `field_mapping.yaml` are tracked). A real-looking batch with neither marker
+   nor attestation must be hard-rejected.
 2. **No independent clinical advice.** The system *reports and cites* retrieved
    source text. Wording is "Guideline X recommends…", never "You should…".
    Every response carries a non-removable disclaimer. This is enforced in agent

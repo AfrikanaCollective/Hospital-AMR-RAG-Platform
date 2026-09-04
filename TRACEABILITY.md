@@ -10,7 +10,11 @@ to the file(s)/module(s) implementing it, its test(s), and its status.
 update its row (status + implementing file(s) + test(s)) in the *same* change,
 not as a follow-up. Treat an out-of-date row as a defect.
 
-**Populated:** 2026-08-27 (Phase 0). **Updated:** 2026-08-27 (end of Phase 1).
+**Populated:** 2026-08-27 (Phase 0). **Updated:** 2026-08-27 (end of Phase 1);
+2026-09-01 / 2026-09-02 (Checkpoint 1 — all **applied**): guideline-PDF
+corrections (DEVIATIONS #26–#32); the operator de-identified-newborn-dataset
+changes, C1/C2/C3 confirmed (DEVIATIONS #33–#38); record-schema temporal fields
++ design principles → schema v1.3.0 (DEVIATIONS #39).
 Rows marked `in progress` have a scaffolded contract/interface **and a test**
 in the Phase 1 skeleton; their behaviour is completed in the phase named in the
 notes. Everything else is `not started`. Paths are relative to the repo root
@@ -27,12 +31,12 @@ Legend: `—` = not yet assigned.
 
 | ID | Requirement (short) | Implementing file(s) | Test(s) | Status |
 |---|---|---|---|---|
-| PRD-001 | Ingest external guideline documents (PDF) into a versioned corpus | `app/ingestion/pdf_parse.py`, `app/ingestion/tasks.py`, `app/api/routes/ingest.py` | — | not started |
-| PRD-002 | Ingest patient records via flat file (CSV/JSON) | `app/ingestion/records.py`, `app/api/routes/ingest.py` | — | not started |
-| PRD-003 | Ingest patient records via API | `app/ingestion/records.py`, `app/api/routes/ingest.py` | — | not started |
-| PRD-004 | Chunks retain doc id + version + section path + page + char offset | `app/ingestion/chunking.py`, `app/db/models/corpus.py` | — | not started |
+| PRD-001 | Ingest external guideline documents (PDF) into a versioned corpus | `app/ingestion/pdf_parse.py`, `app/ingestion/chunking.py`, `app/ingestion/tasks.py`, `app/api/routes/ingest.py`, `scripts/prepare_sample_guidelines.py`, `data/sample_guidelines/manifest.example.json` | `tests/test_prepare_guidelines.py` | not started — **scope corrected + applied at Checkpoint 1:** dev corpus is 3 real multi-page PDFs (WHO 2017/2024, Kenya MOH 2022) with tables + figures + heterogeneous formats; `prepare_sample_guidelines` validates the corpus + manifest; ingestion (Phase 2) must handle `format_profile` (GRADE / clinical_protocol / narrative) and `figure` chunks — ARCH §5.1/§6 updated (DEVIATIONS #26–#28, #31) |
+| PRD-002 | Ingest patient records via flat file (CSV/JSON + EAV/long) | `app/ingestion/eav.py`, `app/ingestion/sources/file_eav.py`, `app/ingestion/records.py` (`guard_batch`), `scripts/ingest_deidentified_records.py`, `app/api/routes/ingest.py`, `app/schemas/record.py` (**v1.3.0**) | `tests/test_eav_mapping.py`, `tests/test_ingest_deidentified.py` | in progress — **applied at Checkpoint 1 (C1/C2/C3 confirmed):** EAV pivot + declarative `field_mapping.yaml` + transform registry; schema **v1.3.0** (`examination_findings[]`, `interventions[]`, `capillary_refill_seconds`; names optional; **`Medication.stopped_at` + `Intervention.stopped_at`**). de-id meds/interventions `started_at` == `encounter.admitted_at`, `stopped_at` null. Persistence to DB is Phase 2 (DEVIATIONS #33–#35, #38, #39). |
+| PRD-003 | Ingest patient records via API | `app/ingestion/sources/base.py` (`PatientDataSource`), `app/ingestion/sources/rest_api.py` (stub), `app/api/routes/ingest.py` (`/ingest/records/eav` stub), `app/schemas/record.py` (design principles — ARCH §4.2) | `tests/test_eav_mapping.py` | in progress — **applied at Checkpoint 1:** `PatientDataSource` seam — `FileEavSource` implemented, `RestApiPullSource` stub reusing the same `field_mapping.yaml`; `record.py` design principles (flat, source-agnostic, additive-only, `schema_version`-gated) documented so a future API is a new mapping spec not a schema change; endpoint bodies Phase 2 (DEVIATIONS #34, #38, #39). |
+| PRD-004 | Chunks retain doc id + version + section path + page + char offset | `app/ingestion/chunking.py`, `app/db/models/corpus.py` | — | not started — **doc-metadata source clarified + ARCH-038 defined at Checkpoint 1:** version / effective_date / publisher / licence / `format_profile` come from an operator-supplied per-file manifest, not PDF metadata (all 3 bundled PDFs have empty PDF metadata); `corpus` models updated with `document.licence`, `document_version.format_profile`/`parse_quality`, `chunk.figure_ref` (DEVIATIONS #29, #31) |
 | PRD-005 | New guideline version supersedes without deleting; old citations resolve | `app/db/models/corpus.py` (`document_version.status`) | — | not started |
-| PRD-006 | Synthetic patient-record generator + sample guideline documents | `scripts/generate_synthetic_records.py`, `scripts/fetch_sample_guidelines.py` | `tests/test_synthetic_generator.py` | in progress (Phase 1 — generator + offline guideline docs working; ingestion Phase 2) |
+| PRD-006 | Dev data: synthetic record generator (fallback) + guideline corpus + an operator-supplied **de-identified newborn dataset** (default record source) | `scripts/generate_synthetic_records.py` (`--domain`), `scripts/prepare_sample_guidelines.py`, `scripts/ingest_deidentified_records.py`, `data/patient_records/deidentified/newborn_nbu_2021/{DATASET.md,field_mapping.yaml}`, `data/sample_guidelines/manifest.example.json` | `tests/test_synthetic_generator.py`, `tests/test_prepare_guidelines.py`, `tests/test_eav_mapping.py`, `tests/test_ingest_deidentified.py` | in progress — **corrected + applied at Checkpoint 1** (DEVIATIONS #26–#39): guidelines = operator PDFs + manifest; records = de-identified `newborn_nbu_2021` (CIN, 2021–2024; EAV → `record.py` v1.3.0 via `field_mapping.yaml`, attestation now completed by the operator). Synthetic generator is the fallback. Persist-to-DB is Phase 2. |
 
 ### 1.2 Retrieval, citation & grounding
 
@@ -84,8 +88,8 @@ Legend: `—` = not yet assigned.
 | ID | Requirement (short) | Implementing file(s) | Test(s) | Status |
 |---|---|---|---|---|
 | PRD-050 | In scope: grounded guideline reporting/synthesis for hypotheticals | `app/agents/guideline_synthesis_agent.py`, `app/agents/prompts/guideline_synthesis.md` | — | not started |
-| PRD-051 | In scope: patient stage-of-care classification (grounded, cited, non-directive) | `app/agents/stage_classifier_agent.py`, `app/agents/prompts/stage_classifier.md` | — | not started |
-| PRD-052 | In scope: missing-information identification (non-directive) | `app/agents/missing_info_agent.py`, `app/agents/prompts/missing_info.md` | — | not started |
+| PRD-051 | In scope: patient stage-of-care classification (grounded, cited, non-directive) | `app/agents/stage_classifier_agent.py`, `app/agents/prompts/stage_classifier.md` | — | not started — depends on record ↔ guideline-criteria **domain match**; bundled corpus is neonatal, Phase-1 record generator is adult → generator needs a `neonatal` profile (DEVIATIONS #30) |
+| PRD-052 | In scope: missing-information identification (non-directive) | `app/agents/missing_info_agent.py`, `app/agents/prompts/missing_info.md` | — | not started — same domain-match dependency as PRD-051 (DEVIATIONS #30) |
 | PRD-053 | Out of scope: autonomous next-step recommendation (walled off, not implemented) | `app/agents/next_step_recommender.py` (interface stub, no logic) | `tests/test_scope_boundary.py` | in progress (Phase 1 — stub asserted logic-free; enforcement Phase 3) |
 | PRD-054 | Out of scope: guideline adjustment for local constraints (walled off, not implemented) | `app/agents/local_adaptation_agent.py` (stub → `capability_not_enabled`) | `tests/test_scope_boundary.py` | in progress (Phase 1 — stub asserted logic-free) |
 | PRD-055 | Narrow exception: surface a documented alternative already in retrieved text | `app/scope/classifier.py`, `app/agents/guideline_synthesis_agent.py` | — | not started |
@@ -116,8 +120,8 @@ Legend: `—` = not yet assigned.
 
 | ID | Requirement (short) | Implementing file(s) | Test(s) | Status |
 |---|---|---|---|---|
-| PRD-080 | All patient-record fields PHI by default, all environments | `app/schemas/record.py`, `app/db/models/records.py` | — | not started |
-| PRD-081 | No real PHI ingested/accepted; synthetic only | `app/ingestion/records.py` (`looks_like_real_data`), `scripts/generate_synthetic_records.py` | `tests/test_synthetic_generator.py` | in progress (Phase 1 — synthetic marker + trust path; heuristic Phase 2) |
+| PRD-080 | All patient-record fields PHI by default, all environments | `app/schemas/record.py`, `app/db/models/records.py` (`patient.data_class`) | `tests/test_ingest_deidentified.py` | not started — **Checkpoint 1 (applied):** `data_class ∈ {synthetic, deidentified}`; `deidentified` handled exactly as PHI (encryption/RBAC/RLS/audit/no-egress/no-training); ARCH §17.1 updated; `.gitignore` blocks committing any dataset (DEVIATIONS #33, #37, #38). Enforcement of encryption/RLS is Phase 2/4. |
+| PRD-081 | No real, non-de-identified PHI; synthetic OR attested de-identified | `app/ingestion/records.py` (`guard_batch`, `DatasetAttestation`), `scripts/ingest_deidentified_records.py`, `scripts/generate_synthetic_records.py` | `tests/test_ingest_deidentified.py`, `tests/test_synthetic_generator.py` | in progress — **applied at Checkpoint 1 (C1 confirmed):** `guard_batch` accepts `synthetic` (marker) or attested `deidentified` (complete `DATASET.md`), else hard-rejects. PRD.md constraint #1 preamble + PRD-081 + PRD-C1 + PRD-A3 amended; CLAUDE.md §3 rule 1 amended (DEVIATIONS #33, #38). |
 | PRD-082 | Encryption in transit for all communication | `deploy/nginx/nginx.conf`, `docker-compose.yml` | — | not started |
 | PRD-083 | Encryption at rest for PHI incl. backups + free-text fields | `app/crypto/provider.py`, `app/db/models/*` (`*_enc` columns) | — | not started |
 | PRD-084 | Field-level access control at API + data layer | `app/auth/rbac.py`, `app/db/models/records.py` (`RecordFieldPolicy`), `app/api/routes/records.py` | — | not started |
@@ -157,7 +161,7 @@ Legend: `—` = not yet assigned.
 
 | ID | Constraint (short) | Enforced by | Test(s) | Status |
 |---|---|---|---|---|
-| PRD-C1 | No real PHI, ever — synthetic data only | `scripts/generate_synthetic_records.py`, `app/ingestion/records.py`, CLAUDE.md §3 | `tests/test_synthetic_generator.py` | in progress |
+| PRD-C1 | No real, non-de-identified PHI, ever — synthetic OR operator-attested de-identified | `scripts/generate_synthetic_records.py`, `scripts/ingest_deidentified_records.py`, `app/ingestion/records.py`, CLAUDE.md §3 | `tests/test_synthetic_generator.py`, `tests/test_ingest_deidentified.py` | in progress — **applied at Checkpoint 1 (C1 confirmed):** wording amended in PRD.md + CLAUDE.md; de-identified data admitted only with attestation and handled as PHI end to end (DEVIATIONS #33, #38) |
 | PRD-C2 | PHI-aware architecture: encryption + field ACL + immutable audit are core | `app/crypto/**`, `app/auth/rbac.py`, `app/audit/**`, `deploy/postgres/init/**` | `tests/test_audit_append_only.py` | in progress |
 | PRD-C3 | No diagnostic/treatment generation; disclaimer layer; defer to human | `app/grounding/wording.py`, `app/schemas/query.py`, `app/agents/prompts/**` | `tests/test_grounding_wording.py` | in progress |
 | PRD-C4 | Grounding enforced, not assumed (citation format, grounding check, HITL triggers) | `app/citations/model.py`, `app/grounding/**`, `app/retrieval/confidence.py`, `app/hitl/triggers.py` | `tests/test_citation_model.py` | in progress |
@@ -196,7 +200,9 @@ Legend: `—` = not yet assigned.
 | ARCH-010 | Frontend: React (Vite + TS), static | `frontend/**` | — | in progress |
 | ARCH-011 | Auth: OIDC-ready `AuthProvider`, dev-JWT for MVP; roles | `app/auth/**`, `app/db/models/iam.py` | — | in progress (interfaces + role model) |
 | ARCH-012 | Reranker: config-driven cross-encoder (placeholder, flagged) | `app/config.py`, `app/retrieval/rerank.py` | — | in progress |
-| ARCH-013 | Chunking: structure-aware, recommendation-atomic | `app/ingestion/chunking.py` | — | not started |
+| ARCH-013 | Chunking: profile-aware, atomic on the citable unit | `app/ingestion/chunking.py`, `app/db/models/corpus.py` | — | not started — **design updated + applied at Checkpoint 1:** ARCH §6 now has rule 0 `format_profile ∈ {grade_recommendations, clinical_protocol, narrative}`, rule 1b `protocol_step`, rule 3b `figure` (caption-only, no OCR, capped at `weak` support per §8.3); `chunk_type` enum + `chunk.figure_ref` in the model (DEVIATIONS #27, #28, #31). Chunker impl Phase 2. |
+| ARCH-038 | *(NEW — defined at Checkpoint 1)* Document ingest metadata is operator-supplied via a per-file manifest, never inferred from PDF metadata; adds `document.licence`, `document_version.format_profile`/`parse_quality`, `chunk.figure_ref` | `app/db/models/corpus.py`, `data/sample_guidelines/manifest.example.json`, `scripts/prepare_sample_guidelines.py`; `app/api/routes/ingest.py` + `app/ingestion/*` (Phase 2) | `tests/test_prepare_guidelines.py` | in progress — ARCH §3/§4.1/§5.1 define it; models + manifest + validator in place (DEVIATIONS #29, #31); ingest-endpoint wiring Phase 2 |
+| ARCH-039 | *(NEW — defined at Checkpoint 1)* Patient-data classes (`synthetic` \| attested `deidentified`), EAV/long ingestion via a reusable pivot + declarative `field_mapping.yaml`, a `PatientDataSource` seam (`FileEavSource` now, `RestApiPullSource` stub), and **`record.py` design principles** (flat, source-agnostic, temporal `started_at`/`stopped_at` pair, additive-only, `schema_version`-gated) | `app/ingestion/eav.py`, `app/ingestion/sources/`, `app/ingestion/records.py`, `app/schemas/enums.py` (`DataClass`), `app/schemas/record.py` (v1.3.0 + design notes), `app/db/models/records.py` (`patient.data_class`, `patient_record.dataset_id`), `scripts/ingest_deidentified_records.py`, `data/patient_records/deidentified/newborn_nbu_2021/{field_mapping.yaml,DATASET.md}` | `tests/test_eav_mapping.py`, `tests/test_ingest_deidentified.py` | in progress — ARCH §3/§4.2/§5.2/§17.1/§20 + ESSENTIALS §1a define it; pivot + mapping + sources + guard + models + scripts + tests in place (DEVIATIONS #33–#35, #38, #39). DB persistence + `/ingest/records/eav` body + `RestApiPullSource` are Phase 2. |
 | ARCH-014 | Citation object schema (min: doc id + version + section/page + chunk offset + quote) | `app/schemas/citation.py`, `app/citations/model.py` | `tests/test_citation_model.py` | in progress |
 | ARCH-015 | Grounding gate: citation-resolves / quote-integrity / entailment / scope-wording | `app/grounding/verifier.py`, `app/grounding/wording.py`, `app/citations/model.py` | `tests/test_grounding_wording.py`, `tests/test_citation_model.py` | in progress (deterministic parts scaffolded; entailment + verdict Phase 3) |
 | ARCH-016 | Multi-agent topology (9 roles, LangGraph, per-node checkpoint, tool allow-lists) | `app/agents/graph.py`, `app/agents/registry.py`, `app/agents/*_agent.py` | `tests/test_agent_registry.py`, `tests/test_smoke.py` | in progress |
@@ -267,7 +273,7 @@ than `not started` (DEVIATIONS.md #19).
 | ID | Assumption (short) | Status |
 |---|---|---|
 | PRD-A1 | Self-hosted LLM gateway available/stubbed; model catalogue via config | deferred (assumption) |
-| PRD-A2 | Sample public guideline PDFs obtainable for dev; licences permit local use | deferred (assumption) |
+| PRD-A2 | Sample public guideline PDFs obtainable for dev; licences permit local use | deferred (assumption — **satisfied at Checkpoint 1** by 3 operator-provided PDFs: WHO ×2, Kenya MOH ×1; per-document **licence pending confirmation in `data/sample_guidelines/manifest.json`**, DEVIATIONS #29) |
 | PRD-A3 | Patient-record schema stable enough to fix in Phase 1; synthetic mirrors it | deferred (assumption — v1.0.0 fixed in `app/schemas/record.py`; refinable, DEVIATIONS #23) |
 | PRD-A4 | Enough reviewers to reach 3-distinct-rater minimum for a sample; else auto-seed | deferred (assumption) |
 | PRD-A5 | Reference deployment is a single host (GPU or CPU fallback) | deferred (assumption) |
@@ -285,11 +291,42 @@ than `not started` (DEVIATIONS.md #19).
 
 ---
 
-## Summary counts (2026-08-27, end of Phase 1)
+## Summary counts (2026-08-27 end of Phase 1; updated 2026-09-01 at Checkpoint 1)
 
 - Implementation requirements tracked: **PRD 0xx–1xx (66)** + **PRD-NFR (6)** +
-  **PRD-C (8)** + **PRD-G (7)** + **ARCH (34)** + **SCOPE (9)** = **130**
-- Status: `in progress` ~70 (scaffolded contract + test) · `not started` ~59 ·
+  **PRD-C (8)** + **PRD-G (7)** + **ARCH (36, incl. ARCH-038 & ARCH-039 defined)** +
+  **SCOPE (9)** = **132**
+- Status: `in progress` ~70 (scaffolded contract + test) · `not started` ~60 ·
   `deferred` 1 (PRD-NFR-1) · `done` 0
 - Tracked decisions (non-goals / assumptions / open questions): **23**, all `deferred`
-- Backend test suite: **49 passing**, offline (no DB / network / real models)
+- Backend test suite: **73 passing**, offline (no DB / network / real models)
+- **2026-09-01 Checkpoint 1 corrections** from operator-supplied guideline PDFs
+  (**Approach A confirmed; applied**): rows PRD-001, PRD-002, PRD-003, PRD-004,
+  PRD-006, PRD-051, PRD-052, ARCH-013, PRD-A2 updated; ARCH-038 added and
+  defined. ARCHITECTURE.md §3/§4.1/§5.1/§5.2/§6/§8.3/§9.1/§15/§20/§21a and
+  ARCHITECTURE-ESSENTIALS.md §2/§12 updated; `corpus` models,
+  `prepare_sample_guidelines.py` + `manifest.example.json`, `generate_synthetic_records.py`
+  (`--domain`, neonatal default), record schema v1.1.0, config/env/Makefile/README
+  all applied. See DEVIATIONS #26–#32.
+- **2026-09-01 Checkpoint 1 — operator-supplied de-identified newborn dataset**
+  (EAV, ~40,871 patients): **C1/C2/C3 confirmed; applied** (DEVIATIONS #33–#38).
+  Rows PRD-002, PRD-003, PRD-006, PRD-080, PRD-081, PRD-C1 updated; **ARCH-039**
+  defined (ARCH §3/§4.2/§5.2/§17.1/§20). Applied: schema **v1.2.0**
+  (`examination_findings[]`, `interventions[]`, `capillary_refill_seconds`;
+  `given_name`/`family_name` optional — C2), `app/schemas/enums.DataClass`,
+  `app/ingestion/eav.py` (pivot + `MappingSpec` + transforms), `app/ingestion/sources/`
+  (`FileEavSource` + `RestApiPullSource` stub), `guard_batch` + `DatasetAttestation`,
+  `records` models (`data_class`, `dataset_id`), `scripts/ingest_deidentified_records.py`,
+  `/ingest/records/eav` stub, folder reorg to `data/patient_records/{synthetic,deidentified/<ds>}/`,
+  `field_mapping.yaml` + `DATASET.md` for `newborn_nbu_2021`, `.gitignore` (no
+  dataset file committable), config/env/Makefile/pyproject/README, PRD.md
+  constraint #1 + PRD-081/C1/A3, CLAUDE.md §3 rule 1, ESSENTIALS §0/§11/§12.
+  DB persistence, `/ingest/records/eav` body, and `RestApiPullSource` are Phase 2.
+- **2026-09-02 Checkpoint 1 — record-schema temporal fields + design principles**
+  (DEVIATIONS #39; still Checkpoint 1, applied): schema **→ v1.3.0**
+  (`Medication.stopped_at`, `Intervention.stopped_at`); ARCHITECTURE.md §4.2
+  gains "Record schema — design notes" (flat, source-agnostic, `started_at`/
+  `stopped_at` for interval entities, additive-only, `schema_version`-gated) +
+  ESSENTIALS §1a; `field_mapping.yaml` bumped, de-id meds/interventions
+  `started_at` == `encounter.admitted_at` asserted; `record_schema.json`,
+  `test_eav_mapping.py`, `test_ingest_deidentified.py` updated. **73 passing.**

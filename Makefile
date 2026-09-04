@@ -3,8 +3,8 @@ COMPOSE ?= docker compose
 PROFILE ?= dev
 BE      ?= cd backend &&
 
-.PHONY: help up down logs build migrate seed gen-data fetch-guidelines \
-        test lint typecheck eval fmt
+.PHONY: help up down logs build migrate seed gen-data ingest-deid \
+        prepare-guidelines fetch-guidelines test lint typecheck eval fmt
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -28,11 +28,17 @@ migrate: ## alembic upgrade head
 seed: ## create schemas/roles + seed rubric domains + demo users
 	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.seed_db
 
-gen-data: ## generate synthetic patient records (CSV + JSON)
-	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.generate_synthetic_records --count 200 --out /app/data/synthetic_records
+gen-data: ## generate synthetic patient records (fallback); domain from RECORD_DOMAIN (default neonatal)
+	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.generate_synthetic_records --count 200 --out /app/data/patient_records/synthetic
 
-fetch-guidelines: ## fetch or generate sample guideline documents
-	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.fetch_sample_guidelines --out /app/data/sample_guidelines
+ingest-deid: ## map an attested de-identified dataset onto record.py (ARCH-039); DATASET=<dir>
+	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.ingest_deidentified_records \
+	  --dataset-dir /app/$(or $(DATASET),data/patient_records/deidentified/newborn_nbu_2021) --attest-deidentified
+
+prepare-guidelines: ## validate the operator-provided guideline corpus in data/sample_guidelines/ (ARCH-038)
+	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.prepare_sample_guidelines --dir /app/data/sample_guidelines
+
+fetch-guidelines: prepare-guidelines ## deprecated alias for prepare-guidelines
 
 test: ## backend pytest (offline; includes gating safety tests)
 	$(BE) pytest -q

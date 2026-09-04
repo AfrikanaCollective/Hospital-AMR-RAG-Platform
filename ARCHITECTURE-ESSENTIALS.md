@@ -12,8 +12,12 @@ Judgment calls: [DEVIATIONS.md](DEVIATIONS.md).
 
 ## 0. Hard rules (never violate)
 
-- **No real PHI, ever.** Synthetic data only, all environments. All patient
-  fields are PHI by default.
+- **No real PHI. Patient data is `synthetic` OR operator-attested
+  `deidentified`** (ARCH-039). A `deidentified` dataset is admitted only with a
+  complete `DATASET.md` attestation + explicit intent flag, then handled
+  **exactly as PHI** (encryption/RBAC/RLS/audit/no-egress/no-training). Any
+  real-looking batch with neither marker nor attestation is hard-rejected. All
+  patient fields are PHI by default. Dataset files are never committed to VCS.
 - **No independent clinical advice.** The system *reports and cites* retrieved
   source text. Framing is "Guideline X recommends…", never "You should…".
   Every response carries a non-removable disclaimer.
@@ -52,18 +56,58 @@ Placeholder model ids (UNVERIFIED, operator must confirm): embeddings
 
 ---
 
-## 2. Chunking (structure-aware, recommendation-atomic)
+## 1a. Patient record schema (`app/schemas/record.py`) — currently v1.3.0
 
-1. Never split an atomic recommendation + its qualifiers (strength, evidence
-   grade, preconditions). `chunk_type = recommendation`.
+One canonical Pydantic model, `PatientRecord` — a flat, **source-agnostic**
+clinical snapshot (not an EHR). Every source maps *onto* it via its own
+adapter / `field_mapping.yaml`; no source-specific field enters the schema.
+
+- **Temporal:** `Medication` / `Intervention` carry `started_at` **+
+  `stopped_at`** (interval; null end = ongoing/unknown). `Vitals` / `LabResult`
+  / `ExamFinding` carry one `*_at` (point-in-time).
+- Repeated data = `list[TypedSubModel]`, never a `dict` bag.
+- Evolution is **additive-only**, gated by `schema_version`; older versions
+  still validate. `given_name`/`family_name` optional (de-identified data has
+  no names).
+- Version history (module docstring): 1.0 adult · 1.1 neonatal fields · 1.2
+  exam findings / interventions / capillary refill / names optional · **1.3
+  `Medication.stopped_at` + `Intervention.stopped_at`** (DEVIATIONS #23, #32,
+  #35, #38, #39).
+- For `newborn_nbu_2021`: every med/intervention `started_at` == the record's
+  `encounter.admitted_at`; `stopped_at` null (no source data).
+
+---
+
+## 2. Chunking (structure-aware; atomic unit depends on the document's `format_profile`)
+
+0. **`format_profile`** per `document_version` (manifest or detected):
+   `grade_recommendations` | `clinical_protocol` | `narrative`. Selects the
+   atomic unit (rules 1 / 1b). `chunk_type ∈ {prose, recommendation,
+   protocol_step, table, figure, list, criteria}`.
+1. `grade_recommendations`: never split a recommendation + its qualifiers
+   (strength, evidence grade, preconditions). `chunk_type = recommendation`.
+1b. `clinical_protocol`: never split a numbered protocol step + sub-bullets +
+   its bound dose table. `chunk_type = protocol_step`. Flowchart → `figure`
+   chunk linked via `parent_chunk_id`.
 2. Chunk within deepest heading; target 350–600 tokens, ~15% prose overlap
    (overlap has no citation authority).
 3. Tables = one chunk (`table`), serialized Markdown + caption + heading.
+3b. Figures/algorithms = one `figure` chunk: caption + heading + **embedded
+   text layer only (no OCR)** + `figure_ref {page, bbox, image_sha256}`. A
+   caption-only figure (`has_embedded_text=false`) is down-weighted and, per
+   §3, capped at `weak` support — never the sole support for a claim.
 4. Criteria lists = `criteria` chunks with structured `meta.criteria[]`
-   (field/op/value/unit) → feeds SCOPE-2.1 / SCOPE-2.2.
+   (field/op/value/unit) → feeds SCOPE-2.1 / SCOPE-2.2. Extractable under any
+   profile.
 5. Store `section_path`, `section_number`, `page_start/end`, `char_start/end`,
-   `parent_chunk_id`, `topic_tags`. Embed with `section_path` prefix; cite the
-   raw slice.
+   `parent_chunk_id`, `format_profile`, `topic_tags`. Embed with `section_path`
+   prefix; cite the raw slice.
+
+Document ingest metadata (title/publisher/version/effective_date/**licence**/
+`format_profile`/topic_tags) is **operator-supplied** via a per-file manifest
+(`data/sample_guidelines/manifest.json`), never inferred from PDF metadata
+(**ARCH-038**). Dev corpus = real PDFs in `SAMPLE_GUIDELINES_DIR`; the
+synthetic 3-doc set is a CI-only opt-in fallback (`GUIDELINES_ALLOW_SYNTHETIC`).
 
 Changing `EMBEDDING_MODEL_ID` ⇒ full re-embed into a new Qdrant collection;
 eval snapshots pin `embedding_collection`.
@@ -306,6 +350,13 @@ sub-threshold retrieval/citation metric.
 - **PHI:** never leaves the deployment; only the self-hosted gateway is
   reachable for model calls; no training on PHI; logs are PHI-redacted;
   patient-record vectors OFF by default (`PATIENT_RECORD_VECTORS_ENABLED`).
+- **Patient-data classes (ARCH-039):** `patient.data_class ∈ {synthetic,
+  deidentified}` + `patient_record.dataset_id`. `deidentified` = attested (a
+  complete `DATASET.md`) real de-identified dataset, handled identically to
+  PHI. `guard_batch()` accepts `synthetic` (marker) / attested `deidentified`,
+  else raises. EAV/long inputs are pivoted + mapped by `field_mapping.yaml`
+  (`app/ingestion/eav.py`); `PatientDataSource` seam = `FileEavSource` now,
+  `RestApiPullSource` stub. Dataset files are `.gitignore`d.
 
 ---
 
@@ -316,6 +367,9 @@ sub-threshold retrieval/citation metric.
 `EMBEDDING_BACKEND`, `CANDIDATE_K`/`FUSED_K`/`TOP_K` (40/24/8), `RRF_K` (60),
 `RETRIEVAL_MIN_SCORE`/`SUPPORT_SCORE_FLOOR`/`MIN_SUPPORTING_CHUNKS`,
 `GROUNDING_ENTAILMENT_MODE` (hybrid), `PATIENT_RECORD_VECTORS_ENABLED` (false),
+`SAMPLE_GUIDELINES_DIR` (data/sample_guidelines), `GUIDELINES_ALLOW_SYNTHETIC` (false),
+`INGEST_MIN_PARSE_QUALITY` (0.60), `PATIENT_RECORDS_DIR` (data/patient_records),
+`RECORD_DOMAIN` (neonatal), `DEIDENTIFIED_ATTESTATION_REQUIRED` (true),
 `LOCAL_ADAPTATION_ENABLED` (false, inert), `ESCALATION_SLA_MINUTES` (60),
 `IRR_MIN_RATERS` (3), `QGEN_COMPOSITION` (60,20,20), `QGEN_DEDUP_THRESHOLD`,
 `SECRETS_BACKEND` (file), `RETENTION_*`, `EVAL_MIN_*`, `AUTH_PROVIDER` (devjwt).

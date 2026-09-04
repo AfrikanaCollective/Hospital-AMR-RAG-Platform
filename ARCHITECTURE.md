@@ -114,6 +114,8 @@ is **untrusted** and is never treated as instructions.
 | **ARCH-010** | **Frontend: React (Vite + TypeScript)**, served static. | PRD-107; TS for typed API client generated from the OpenAPI schema. | Next.js SSR (unneeded), plain JS (loses type safety on citation/HITL payloads). |
 | **ARCH-011** | **Auth: OIDC-ready, static-JWT for MVP dev.** A `AuthProvider` interface with a seeded HS256/RS256 JWT issuer for dev and an OIDC adapter stub for prod. Roles: `clinician`, `reviewer`, `admin`, `service`. | PRD-086. Full IdP (Keycloak) is deferred to avoid MVP scope creep while keeping the seam. See DEVIATIONS.md #4. | Keycloak now (heavier), no auth (violates PRD-086). |
 | **ARCH-012** | **Reranker: config-driven cross-encoder.** Placeholder default `BAAI/bge-reranker-v2-m3` — **UNVERIFIED, flagged**; `RERANKER_MODEL_ID`. | Same rationale as ARCH-004. | Pinned model (violates C6), no reranker (precision loss). |
+| **ARCH-038** | **Document ingest metadata is operator-supplied via a per-file manifest; never inferred from PDF metadata.** `POST /ingest/documents` takes the file **plus** a metadata object (`title`, `publisher`, `external_ref`, `version_label`, `effective_date`, `licence`, `topic_tags`, optional `format_profile`, optional `language`). Batch/bundled ingestion reads the same fields per file from a sidecar `data/sample_guidelines/manifest.json`. A cover-page heuristic may *suggest* values for the admin to confirm; it never auto-commits. Adds `document.licence` and `document_version.format_profile`. | Real guideline PDFs routinely ship with absent or wrong PDF metadata (all three bundled dev PDFs have an empty `/Title`); version/effective-date live in the filename or cover page. PRD-A2 also requires a per-document licence record, which had no home. See DEVIATIONS.md #29. | Parsing metadata out of the PDF (unreliable, and a silent-error source for citations); a global config block (doesn't scale past one document). |
+| **ARCH-039** | **Patient-data classes + EAV/mapping-spec ingestion + a `PatientDataSource` seam.** A `data_class ∈ {synthetic, deidentified}` (`patient.data_class`, `patient_record.dataset_id`). `deidentified` data is admitted **only** with a complete operator **attestation** (`DATASET.md` front-matter: source, collection period, site, de-identification method + standard, consent basis, licence, attested-by/date) **and** an explicit intent flag; it is then handled **exactly as PHI** everywhere downstream. Record ingestion supports both wide (one row/patient) and **EAV / long** (`key, field_name, field_value, context`) inputs; EAV is pivoted long→wide and mapped onto `app/schemas/record.py` by a **declarative `field_mapping.yaml`** (per source field → target path + named transform; `list_targets` for repeated-field families). The same mapping spec is the contract for file ingestion now and a `RestApiPullSource` (stub) later. | The operator supplied a real de-identified newborn dataset (40,871 patients, EAV, 32 variables not matching `record.py`) and instructed it be used instead of synthetic records — a departure from constraint #1 that only the operator can authorise, and a format the wide-row ingestion path could not consume. A declarative mapping keeps the transform auditable and reusable for a future pull-API. See DEVIATIONS.md #33, #34, #38. | Hard-coding the pivot + field renames in Python (not auditable, not reusable); accepting de-identified data with no attestation (weakens constraint #1 with nothing recorded); one-off scripts per dataset. |
 
 ---
 
@@ -134,6 +136,7 @@ tables also carry `created_by`. Times are UTC.
 | publisher | text | e.g. national body |
 | source_uri | text | where it was ingested from (dev: local path / public URL) |
 | classification | text | `public` \| `internal` (never `phi`) |
+| licence | text | licence / usage terms, from the ingest manifest (ARCH-038); e.g. "CC BY-NC-SA 3.0 IGO" |
 | created_at | timestamptz | |
 
 **`document_version`**
@@ -148,6 +151,8 @@ tables also carry `created_by`. Times are UTC.
 | status | text | `active` \| `superseded` \| `withdrawn` |
 | content_sha256 | text | integrity of the source file |
 | page_count | int | |
+| format_profile | text | `grade_recommendations` \| `clinical_protocol` \| `narrative` — from the manifest or detected at ingest; drives chunking (§6) and the reported-content framing variant (§9.1) |
+| parse_quality | float | 0–1; extractable-text ratio + heading-detection confidence. Below `INGEST_MIN_PARSE_QUALITY` → visible badge + admin review before chunks become retrievable |
 
 **`chunk`**
 | column | type | notes |
@@ -162,26 +167,31 @@ tables also carry `created_by`. Times are UTC.
 | char_start | int | offset in normalized document text |
 | char_end | int | offset in normalized document text |
 | ordinal | int | position within document_version |
-| parent_chunk_id | uuid FK → chunk, null | for context expansion |
-| chunk_type | text | `prose` \| `recommendation` \| `table` \| `list` \| `criteria` |
-| text | text | normalized chunk text (verbatim slice) |
+| parent_chunk_id | uuid FK → chunk, null | for context expansion; also links a `figure`/`table` to the `protocol_step` or section it belongs to |
+| chunk_type | text | `prose` \| `recommendation` \| `protocol_step` \| `table` \| `figure` \| `list` \| `criteria` |
+| text | text | normalized chunk text (verbatim slice). For `figure`: caption + nearest heading + any text present in the PDF's embedded text layer for the figure region (no OCR — §5.1) |
+| figure_ref | jsonb, null | for `chunk_type = figure`: `{page, bbox, image_sha256}` so the citation view can render the figure crop |
 | token_count | int | |
 | vector_id | text | Qdrant point id (kept in sync) |
-| meta | jsonb | evidence grade, recommendation strength, extracted stage-criteria tags, etc. |
+| meta | jsonb | evidence grade, recommendation strength, extracted stage-criteria tags, `has_embedded_text` (for figures), `split_group_id`, etc. |
 
 Qdrant point payload mirrors: `chunk_id`, `document_id`, `document_version_id`,
-`version_label`, `effective_date`, `status`, `section_number`, `page_start`,
-`chunk_type`, `topic_tags[]`. Named vectors: `dense` (float32[d]) and `sparse`
-(BM25-style).
+`version_label`, `effective_date`, `status`, `format_profile`, `section_number`,
+`page_start`, `chunk_type`, `has_embedded_text`, `topic_tags[]`. Named vectors:
+`dense` (float32[d]) and `sparse` (BM25-style). A `figure` chunk with no
+embedded text is embedded from its caption only and carries a payload flag so
+retrieval can down-weight it and the grounding check (§8.3) can cap its support
+strength.
 
 ### 4.2 `records` schema — patient records (PHI)
 
 **`patient`**
 | column | type | notes |
 |---|---|---|
-| id | uuid PK | synthetic |
-| mrn_enc | bytea `enc` | synthetic medical record number, encrypted |
-| source | text | `file` \| `api` |
+| id | uuid PK | |
+| mrn_enc | bytea `enc` | medical record number, encrypted (synthesised `DEID-<key>` for de-identified data) |
+| source | text | `file` \| `api` \| `eav_file` |
+| data_class | text | `synthetic` \| `deidentified` (ARCH-039). Both handled identically here (as PHI); the field is provenance, not a weaker control. |
 | consent_flags | jsonb | opt-out / research flags honoured by access layer |
 | created_at | timestamptz | |
 
@@ -190,16 +200,38 @@ Qdrant point payload mirrors: `chunk_id`, `document_id`, `document_version_id`,
 |---|---|---|
 | id | uuid PK | |
 | patient_id | uuid FK → patient | |
-| schema_version | text | |
+| schema_version | text | e.g. `1.2.0` |
 | ingested_at | timestamptz | |
 | payload_enc | bytea `enc` | full structured record (JSON), envelope-encrypted |
 | field_index | jsonb | **non-PHI** index: which field *names* are present/null (no values) — used by the missing-info agent without decrypting values |
+| dataset_id | text, null | e.g. `newborn_nbu_2021` (ARCH-039) |
 | source_batch_id | uuid | ingestion batch |
 
 Field-level access: a `record_field_policy` table maps `(role, purpose, field_path)`
 → `allow` / `deny` / `mask`. The record accessor decrypts `payload_enc`, applies
 the policy for the caller, and returns only permitted fields. Every access is
 audit-logged with the field list.
+
+#### Record schema (`app/schemas/record.py`) — design notes (DEVIATIONS.md #39)
+
+The structured record inside `payload_enc` is one canonical Pydantic model,
+`PatientRecord`, deliberately kept **small and source-agnostic** — a flat
+clinical snapshot, not a full EHR:
+
+- **One model, many adapters.** Every source (synthetic generator, EAV file,
+  future REST API — §5.2) maps *onto* `PatientRecord`. No source-specific field
+  (upstream ids, encodings, dataset quirks) ever lands in the schema; those
+  live in the per-source mapping spec / `PatientDataSource` adapter.
+- **Temporal convention.** Entities that occur over an interval —
+  `Medication`, `Intervention` — carry an optional **`started_at` / `stopped_at`**
+  pair (either end may be null; null `stopped_at` = ongoing/unknown).
+  Point-in-time entities — `Vitals`, `LabResult`, `ExamFinding` — carry a single
+  `*_at`. No bespoke per-entity time fields.
+- **Repeated data is `list[TypedSubModel]`** (validates + round-trips through
+  JSON APIs), never a free-form `dict`.
+- **Additive-only evolution, gated by `schema_version`** (currently `1.3.0`;
+  history in the module docstring). An API client sending an older
+  `schema_version` still validates. New fields are optional/nullable.
 
 ### 4.3 `memory` schema
 
@@ -404,16 +436,29 @@ clinicians (a `is_clinician` flag), because rubric raters must be clinicians.
 
 ### 5.1 Guideline documents (PDF)
 
-1. **Submit** (`POST /ingest/documents`, admin) → file stored, `document` +
-   `document_version` rows created (`status=active`), `content_sha256` recorded,
+1. **Submit** (`POST /ingest/documents`, admin) → the file **plus an operator-
+   supplied metadata object** (ARCH-038: `title`, `publisher`, `external_ref`,
+   `version_label`, `effective_date`, `licence`, `topic_tags`, optional
+   `format_profile`, optional `language`). Batch/bundled ingestion reads the
+   same fields per file from `data/sample_guidelines/manifest.json`. Metadata
+   is **never inferred from PDF metadata** (routinely absent or wrong); a
+   cover-page heuristic may only *suggest* values for the admin to confirm.
+   File stored; `document` (+ `licence`) and `document_version` (+
+   `format_profile`) rows created (`status=active`); `content_sha256` recorded;
    Celery task enqueued.
 2. **Parse & normalize** (worker): extract text with layout awareness
    (primary: a structured PDF parser; fallback: plain text extraction with a
    logged quality warning). Produce a single **normalized document text** with a
    stable character index, plus a **section tree** (heading detection from font
-   size/numbering/regex on `^\d+(\.\d+)*\s`).
-3. **Chunk** per §6. Persist `chunk` rows with `section_path`, `page_start/end`,
-   `char_start/end`, `chunk_type`, `parent_chunk_id`, `topic_tags`.
+   size/numbering/regex on `^\d+(\.\d+)*\s`). Detect figure/table regions and
+   record page + bounding box for each. Compute `parse_quality` (extractable-
+   text ratio + heading-detection confidence). **OCR is out of scope for MVP**:
+   image-only regions contribute no text. If `parse_quality <
+   INGEST_MIN_PARSE_QUALITY` the document is flagged, badged, and held for
+   admin review before its chunks become retrievable.
+3. **Chunk** per §6, using the `format_profile`. Persist `chunk` rows with
+   `section_path`, `page_start/end`, `char_start/end`, `chunk_type`,
+   `parent_chunk_id`, `figure_ref` (figures), `topic_tags`.
 4. **Embed** (worker): dense embedding per chunk (`EMBEDDING_MODEL_ID`), sparse
    vector (BM25 term weights) per chunk; upsert Qdrant points with payload;
    write back `vector_id`.
@@ -431,38 +476,99 @@ clinicians (a `is_clinician` flag), because rubric raters must be clinicians.
 Ingestion is idempotent on `content_sha256` (re-submitting the identical file
 is a no-op with a logged notice).
 
-### 5.2 Patient records (file + API)
+### 5.2 Patient records (file + EAV + API) — ARCH-039
 
-- **File** (`POST /ingest/records/file`, CSV or JSON, admin/service): validated
-  against the Pydantic record schema (`schema_version`); each record →
-  `patient` (dedupe on synthetic MRN) + append `patient_record` snapshot;
-  `payload_enc` written; `field_index` computed (names only, no values).
-- **API** (`POST /ingest/records`, service): same schema, same path, one record
-  per call or a bounded batch.
-- **No embedding of record content by default** (ARCH-023 / DEVIATIONS.md #8):
-  SCOPE-2 flows read structured fields directly. A config flag
-  `PATIENT_RECORD_VECTORS_ENABLED=false` gates any future record vectorization;
-  if enabled, record vectors go in a **separate Qdrant collection** with
-  mandatory `patient_id` payload filtering and their own access checks.
-- Ingestion rejects any batch flagged (heuristically) as possibly real (e.g.
-  plausible-real-name entropy check) with a hard error — defence in depth for
-  PRD-081. This is a warning-level heuristic, not a guarantee; logged as
-  DEVIATIONS.md #16.
+**Data classes (ARCH-039 / DEVIATIONS.md #33).** Every batch resolves to a
+`data_class`:
+- `synthetic` — trusted via the `synthetic-generator-v1` provenance marker.
+- `deidentified` — an operator-supplied real de-identified dataset. Admitted
+  **only** with a complete **attestation** (`DATASET.md` front-matter: source,
+  collection period, site, de-identification method + standard, consent basis,
+  licence, attested-by/date) **and** explicit intent (`--attest-deidentified` /
+  API `attestation`). Once admitted it is treated **exactly as PHI** — envelope
+  encryption, field-level RBAC, RLS, purpose-of-use, full audit, no egress, no
+  training (§17). `data_class` is recorded for provenance/reporting only.
+- Anything else — a real-looking batch with neither marker nor attestation is
+  **hard-rejected** (`RealDataSuspectedError`; DEVIATIONS.md #16).
+
+**Ingestion paths.**
+- **Wide file** (`POST /ingest/records/file`, CSV or JSON, one row/patient):
+  validated against the Pydantic record schema; each record → `patient`
+  (dedupe on MRN) + append `patient_record` snapshot; `payload_enc` written;
+  `field_index` computed (names only).
+- **EAV / long file** (`POST /ingest/records/eav`; `scripts/ingest_deidentified_records.py`):
+  input columns `key, field_name, field_value, context`. Pivoted long→wide on
+  `key`, then a **declarative mapping spec** (`field_mapping.yaml`) is applied:
+  per source field → `{target: "<record.py dotted path, incl. vitals.0.x>",
+  transform: "<named transform>"}`, plus `list_targets` for repeated-field
+  families (e.g. 10 exam signs → `examination_findings[]`, 7 interventions →
+  `interventions[]`, 5 antimicrobials → `medications[]`). A `list_targets`
+  group may set each item's timestamp (`started_at` / `recorded_at`) from a
+  source field; for `newborn_nbu_2021` that source is `admission_date_time`, so
+  every mapped medication/intervention `started_at` **equals
+  `encounter.admitted_at`** by construction (the dataset carries no per-item
+  start time; `stopped_at` is absent and stays null — DEVIATIONS.md #39).
+  Transforms are a fixed registry (`identity`, `to_int`, `to_float`, `kg_to_g`,
+  `sex_norm`, `bool_truthy`, `parse_datetime`, `none_literal_to_null`). Output
+  is validated as `PatientRecord`. `app/ingestion/eav.py`.
+- **API** (`POST /ingest/records`, service): wide schema, one record/bounded
+  batch. **Future pull-API** — `app/ingestion/sources/RestApiPullSource` (stub)
+  pulls from an upstream that returns the same variables and **reuses the same
+  `field_mapping.yaml`**; incremental backfill by `key` / `updated-since` is a
+  Phase-2+ capability on the stub.
+
+**Sources seam.** `app/ingestion/sources/PatientDataSource` — `FileEavSource`
+(implemented) and `RestApiPullSource` (stub) both yield validated
+`PatientRecord` objects, so file and API ingestion share one downstream.
+
+**No embedding of record content by default** (ARCH-023 / DEVIATIONS.md #8):
+SCOPE-2 flows read structured fields directly. `PATIENT_RECORD_VECTORS_ENABLED=false`
+gates any future record vectorization (separate Qdrant collection, mandatory
+`patient_id` filter).
+
+**Dev record data.** The default dev source is now the operator's de-identified
+newborn dataset (`data/patient_records/deidentified/<dataset>/`), which is
+neonatal and matches the guideline corpus. The synthetic generator
+(`RECORD_DOMAIN`, default `neonatal`; `adult_inpatient` retained) is a
+**fallback** for when no dataset is available. Either way the record *schema*
+(`app/schemas/record.py`) is domain-agnostic; domain-specific *content*
+(problem list, weight-based dosing, vitals ranges, care settings, staging
+vocabulary) lives in the generator's per-domain library, and the mapping spec
+for a real dataset. SCOPE-2.1/2.2 and the auto-question generator require the
+record data and the guideline corpus to be the **same clinical domain**
+(DEVIATIONS.md #30).
 
 ---
 
 ## 6. Chunking & embedding strategy (ARCH-013)
 
-**Chosen strategy: structure-aware, recommendation-atomic chunking.**
+**Chosen strategy: structure-aware chunking, atomic on the citable unit — and
+the citable unit is *format-dependent*.**
+
+**Format profile (rule 0).** At ingest, each `document_version` is assigned a
+`format_profile` (from the manifest — ARCH-038 — or detected): the presence of
+GRADE strength/certainty markers ("Strong/conditional recommendation",
+"…quality/certainty of evidence") → `grade_recommendations`; a numbered
+care-pathway / step structure with dosing tables and algorithm flowcharts and
+no GRADE statements → `clinical_protocol`; otherwise `narrative`. The atomic
+unit and rules 1–1b below are selected by the profile; rules 2–6 apply to all
+profiles. (The bundled dev corpus exercises all three: WHO 2017/2024 →
+`grade_recommendations`, Kenya MOH Newborn Care Protocols → `clinical_protocol`.
+DEVIATIONS.md #27.)
 
 Rules, in priority order:
 
-1. **Never split an atomic recommendation.** A numbered/bulleted recommendation
-   statement plus its immediate qualifiers (strength of recommendation, evidence
-   grade, "in patients with…" conditions) is one chunk (`chunk_type =
-   recommendation`), regardless of length (soft cap 1,024 tokens; if exceeded,
-   split at sentence boundaries but tag `split_group_id` so retrieval can
-   re-join).
+1. **Never split an atomic recommendation** (`grade_recommendations`). A
+   numbered/bulleted recommendation statement plus its immediate qualifiers
+   (strength of recommendation, evidence grade, "in patients with…" conditions)
+   is one chunk (`chunk_type = recommendation`), regardless of length (soft cap
+   1,024 tokens; if exceeded, split at sentence boundaries but tag
+   `split_group_id` so retrieval can re-join).
+1b. **Protocol steps are atomic** (`clinical_protocol`). A numbered protocol
+   step / pathway node plus its sub-bullets and any dose/parameter table bound
+   to that step is one `chunk_type = protocol_step` chunk; do not split it. An
+   algorithm flowchart becomes a `figure` chunk (rule 3b) linked via
+   `parent_chunk_id` to the step it belongs to.
 2. **Respect section boundaries.** Chunk within the deepest heading that still
    yields a coherent unit. Target **350–600 tokens**, **~15% overlap** between
    adjacent prose chunks in the same section (overlap carries no citation
@@ -470,25 +576,38 @@ Rules, in priority order:
 3. **Tables are chunks.** A table (or a row-group if very large) is one
    `chunk_type = table` chunk, serialized to Markdown, with the caption and the
    nearest heading prepended for context.
+3b. **Figures / algorithms are chunks.** One `chunk_type = figure` chunk per
+   figure, holding the caption + nearest heading + any text present in the
+   PDF's **embedded text layer** for the figure region, plus `figure_ref =
+   {page, bbox, image_sha256}`. **OCR is out of scope for MVP** (DEVIATIONS.md
+   #28): a figure with no embedded text (`meta.has_embedded_text = false`) is
+   embedded from its caption only, down-weighted in dense retrieval, and — per
+   §8.3 — can be **at most `weak` support** for a claim and never its sole
+   support. `parent_chunk_id` links the figure to its `protocol_step` or
+   section.
 4. **Criteria lists** (inclusion/exclusion, staging criteria) are tagged
    `chunk_type = criteria` and get structured `meta.criteria[]` extraction
    (field, operator, value, unit) where the text is regular enough — this feeds
-   SCOPE-2.1 stage classification and SCOPE-2.2 missing-info.
+   SCOPE-2.1 stage classification and SCOPE-2.2 missing-info. Criteria may be
+   extracted under **any** profile (a `grade_recommendations` eligibility
+   statement, a `clinical_protocol` entry/exit criterion, a staging table).
 5. **Context breadcrumb.** Every chunk's stored `text` is prefixed (for
    embedding only, not for citation display) with `section_path` so short
    chunks embed with their context. The citation view shows the raw slice.
 6. **Parent linkage.** Each chunk references a `parent_chunk_id` (its section
    summary chunk or the section's first chunk) for the `expand_context` tool.
 
-**Rationale.** Clinical guidelines are highly structured and their
-recommendation statements are the atomic unit a clinician cites. Fixed-size
-windowing routinely severs a recommendation from its "strength: conditional,
-evidence: low" qualifier or its "in patients with eGFR < 30" precondition —
-in a grounding-critical system that is a safety defect, not just a quality one.
-Structure-aware chunking keeps citations meaningful (a citation resolves to a
-recommendation, a table, or a criteria block, not a random 512-token window)
-and makes the grounding check tractable (segment ↔ chunk entailment over
-coherent units).
+**Rationale.** Clinical guidelines are highly structured, but the **atomic
+citable unit varies by document format**: a GRADE recommendation statement, a
+protocol step, a table, a figure, or a criteria block. Fixed-size windowing
+routinely severs any of these from its qualifiers — a recommendation from its
+"strength: conditional, evidence: low" tag or its "in patients with eGFR < 30"
+precondition; a protocol step from the dose table that completes it — and in a
+grounding-critical system that is a safety defect, not just a quality one.
+Profile-aware, structure-aware chunking keeps citations meaningful (a citation
+resolves to a recommendation, a protocol step, a table, a figure, or a criteria
+block, not a random 512-token window) and makes the grounding check tractable
+(segment ↔ chunk entailment over coherent units).
 
 **Embedding.** `EMBEDDING_MODEL_ID` (ARCH-004), L2-normalized, cosine.
 Query-side instruction prefix applied if the configured model expects one
@@ -617,11 +736,18 @@ For each **claim segment**:
    ("you should", "recommend that you", imperatives directed at the reader),
    dosing/therapy specifics absent from the cited quote, or population claims
    not in the quote. Fail → `unsupported` (`scope_violation`).
+5. **Figure support cap.** If a claim segment's *only* citation is a `figure`
+   chunk with `meta.has_embedded_text = false` (caption-only, no OCR — §6 rule
+   3b), the segment is capped at `weak` regardless of the entailment result,
+   and a figure can never be the sole support for a claim. The reviewer is
+   shown the figure crop (`figure_ref`) so a human can confirm what the
+   flowchart actually says.
 
 **Verdict policy:**
 | Condition | Action |
 |---|---|
 | All claim segments `supported` | Release / store the answer (with disclaimer wrapper). |
+| Any segment supported only by a caption-only `figure` chunk | Treated as `weak` (row below): release marked + queue for review; escalate if it is the sole support for a claim that stripping would break. |
 | Any segment `weak`, none `unsupported` | Release with a visible "weakly supported" marker on those segments **and** route the result into the review queue (sampling-independent). |
 | 1+ segments `unsupported`, and removing them leaves a coherent, still-useful answer | **Partial-strip**: remove unsupported segments, re-run the check on the remainder; if it passes, release the reduced answer with a note that content was removed for lack of support, and log the stripped segments to `eval` as grounding failures. |
 | 1+ segments `unsupported` and stripping breaks the answer, OR a `scope_violation` of the directive/CDS kind | **Escalate** (`trigger_code = grounding_failure` or `scope_boundary`); hold the answer. |
@@ -644,7 +770,7 @@ different audit `outcome` values, and different eval expectations.
 | ID | Item | Notes |
 |---|---|---|
 | **SCOPE-1.1** | A clinician may ask a hypothetical ("what does the guideline say for a patient presenting with X, Y, Z?") and receive a synthesized answer drawn from retrieved guideline chunks, with citations per §8. | Handled by retrieval agent → guideline-synthesis agent → citation-verifier. |
-| **SCOPE-1.2** | All such output is framed as **reported guideline content** — "Guideline X recommends…", "Per [source], the recommended approach is…" — never "You should…". Enforced in the **prompt template** of every guideline-touching agent and by the §8.3 wording check, not only in the UI. | Prompt templates live in `app/agents/prompts/` and are versioned; the safety filter is a second line. |
+| **SCOPE-1.2** | All such output is framed as **reported guideline content** — "Guideline X recommends…", "Per [source], the recommended approach is…" — never "You should…". For `clinical_protocol` sources the framing variant is "Protocol X, step N states…" / "Per [source] pathway, the documented step is…" — still reported content, never directive. Enforced in the **prompt template** of every guideline-touching agent (the template carries the framing variant for the `format_profile` of the source being cited) and by the §8.3 wording check, not only in the UI. | Prompt templates live in `app/agents/prompts/` and are versioned; the safety filter is a second line. |
 | **SCOPE-1.3** | If no relevant guideline is retrieved, the system says so explicitly and generates no recommendation from general knowledge — for hypothetical/synthetic queries exactly as for real ones. | Same low-confidence/empty policy as §7; `outcome = no_guideline`. |
 | **SCOPE-1.4** | The auto-generated hypothetical question utility (§15) produces scope-1-framed questions from synthetic records. | |
 
@@ -1038,6 +1164,11 @@ creates a new linked result, it does not edit history.
 A utility (`app/eval/question_gen/`, run as a Celery task) converts **synthetic
 patient records** into **narrative guideline-lookup hypotheticals**.
 
+The synthetic records and the ingested guideline corpus **must be in the same
+clinical domain** (`RECORD_DOMAIN`, default `neonatal` for the bundled dev
+corpus — §5.2, DEVIATIONS.md #30); otherwise steps 2 and 8 below cannot match
+record fields to guideline applicability/criteria.
+
 ### 15.1 Pipeline
 
 1. **Plan the set.** Given a target size N and the 60/20/20 composition
@@ -1153,7 +1284,8 @@ report and (optionally) fails CI on threshold breach.
 
 | Class | Examples | Handling |
 |---|---|---|
-| **PHI** (default for all patient-record fields) | every field of a `patient_record`, `patient_context` payloads, any message/answer text that references a patient, prompt/response logs for patient-context turns | encrypted at rest (field/envelope), field-level RBAC, audit on every access, never leaves the deployment, never sent to any model but the self-hosted gateway, never used for training |
+| **PHI** (default for all patient-record fields, whether the source `data_class` is `synthetic` or `deidentified`) | every field of a `patient_record`, `patient_context` payloads, any message/answer text that references a patient, prompt/response logs for patient-context turns | encrypted at rest (field/envelope), field-level RBAC, audit on every access, never leaves the deployment, never sent to any model but the self-hosted gateway, never used for training |
+| **Attested de-identified dataset** (ARCH-039) | an operator-supplied real de-identified dataset (e.g. `newborn_nbu_2021`) admitted with a complete `DATASET.md` attestation | **handled identically to PHI** (row above) — the `data_class` label is for provenance/reporting, not weaker controls; the dataset file is never committed to VCS |
 | **Internal** | corpus metadata, thresholds, non-PHI audit fields | standard access control |
 | **Public** | guideline document text (already published) | integrity-protected (`content_sha256`), but not confidential; still treated as **untrusted input** (injection) |
 
@@ -1289,6 +1421,12 @@ All via env / `.env` (secrets via `SECRETS_BACKEND`). Non-exhaustive:
 | `RETRIEVAL_MIN_SCORE` / `SUPPORT_SCORE_FLOOR` / `MIN_SUPPORTING_CHUNKS` | tuned on eval | confidence thresholds |
 | `GROUNDING_ENTAILMENT_MODE` | `hybrid` | `lexical` \| `model` \| `hybrid` |
 | `PATIENT_RECORD_VECTORS_ENABLED` | `false` | gate for any record vectorization |
+| `SAMPLE_GUIDELINES_DIR` | `data/sample_guidelines` | dev guideline corpus location (ARCH-038) |
+| `GUIDELINES_ALLOW_SYNTHETIC` | `false` | allow `prepare_sample_guidelines` to emit the CI-only synthetic fixture set when no real docs are present (DEVIATIONS.md #26) |
+| `INGEST_MIN_PARSE_QUALITY` | `0.60` | below this a document is badged + held for admin review (§5.1) |
+| `RECORD_DOMAIN` | `neonatal` | synthetic-record content-library profile; must match the corpus domain (`neonatal` \| `adult_inpatient`, DEVIATIONS.md #30) |
+| `PATIENT_RECORDS_DIR` | `data/patient_records` | holds `synthetic/` + `deidentified/<dataset>/` (ARCH-039) |
+| `DEIDENTIFIED_ATTESTATION_REQUIRED` | `true` | a `deidentified` dataset needs a complete `DATASET.md` attestation before ingestion (DEVIATIONS.md #33) |
 | `LOCAL_ADAPTATION_ENABLED` | `false` (hard-wired) | extension-seam flag; inert without implementation |
 | `ESCALATION_SLA_MINUTES` | `60` | hold time before "no reviewer available" messaging |
 | `IRR_MIN_RATERS` | `3` | distinct-rater minimum |
@@ -1321,9 +1459,17 @@ not silently accepted.
 2. **PDF parsing of real government guidelines.** Multi-column layouts, tables,
    figures, scanned/OCR pages, and inconsistent numbering will break section
    detection and, worse, corrupt `page`/`char` offsets — which directly
-   undermines citation trust. Mitigation: a parse-quality score per document, a
-   visible "low parse confidence" badge, a fallback that still produces
-   citations at page granularity, and admin review of low-score ingests.
+   undermines citation trust. The bundled corpus makes this concrete: the Kenya
+   MOH protocol (174 pp) carries much of its clinical logic in **algorithm
+   flowcharts**, which are now a first-class `figure` chunk type (§6 rule 3b,
+   DEVIATIONS.md #28) but hold **no machine-readable content without OCR**
+   (out of scope for MVP) — so a protocol whose decision logic lives in
+   flowcharts will retrieve poorly until those are transcribed. Mitigation:
+   a `parse_quality` score per document, a visible "low parse confidence"
+   badge + admin hold below `INGEST_MIN_PARSE_QUALITY`, page-granularity
+   citation fallback, and `figure` chunks that are down-weighted, flagged
+   (`has_embedded_text`), and — per §8.3 — capped at `weak` support and never
+   the sole support for a claim.
 3. **Conflict detection is genuinely hard.** Naive same-section/NLI heuristics
    will both miss subtle contradictions and over-flag benign differences in
    wording, creating escalation noise or false confidence. Mitigation: start

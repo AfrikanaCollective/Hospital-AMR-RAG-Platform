@@ -2,6 +2,8 @@
 
 PRD-004: each chunk retains document id + version + section path + page + char
 offset span. PRD-005: new versions supersede without deleting.
+ARCH-038: `document.licence` + `document_version.format_profile` come from the
+operator-supplied ingest manifest, never from PDF metadata.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +29,7 @@ class Document(UUIDPk, TimestampMixin, Base):
     publisher: Mapped[str | None] = mapped_column(String(256))
     source_uri: Mapped[str | None] = mapped_column(Text)
     classification: Mapped[str] = mapped_column(String(16), default="public")  # public | internal
+    licence: Mapped[str | None] = mapped_column(Text)  # usage terms, from the ingest manifest (ARCH-038)
 
 
 class DocumentVersion(UUIDPk, Base):
@@ -43,6 +46,9 @@ class DocumentVersion(UUIDPk, Base):
     status: Mapped[str] = mapped_column(String(16), default="active")  # active|superseded|withdrawn
     content_sha256: Mapped[str] = mapped_column(String(64))
     page_count: Mapped[int | None] = mapped_column(Integer)
+    # grade_recommendations | clinical_protocol | narrative (ARCH-038 / ARCH §6 rule 0)
+    format_profile: Mapped[str | None] = mapped_column(String(24))
+    parse_quality: Mapped[float | None] = mapped_column(Float)  # 0-1; below INGEST_MIN_PARSE_QUALITY -> admin hold
 
 
 class Chunk(UUIDPk, Base):
@@ -63,11 +69,14 @@ class Chunk(UUIDPk, Base):
     char_end: Mapped[int] = mapped_column(Integer)
     ordinal: Mapped[int] = mapped_column(Integer)
     parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey(f"{SCHEMA}.chunk.id"))
-    chunk_type: Mapped[str] = mapped_column(String(16))  # prose|recommendation|table|list|criteria
+    # prose|recommendation|protocol_step|table|figure|list|criteria (ARCH §6)
+    chunk_type: Mapped[str] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)
+    figure_ref: Mapped[dict | None] = mapped_column(JSONB)  # chunk_type=figure: {page, bbox, image_sha256}
     token_count: Mapped[int | None] = mapped_column(Integer)
     vector_id: Mapped[str | None] = mapped_column(String(64))  # Qdrant point id
-    meta: Mapped[dict] = mapped_column(JSONB, default=dict)  # evidence grade, criteria[], topic_tags
+    # evidence grade, recommendation strength, criteria[], has_embedded_text (figures), split_group_id, topic_tags
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class CorpusSnapshot(UUIDPk, TimestampMixin, Base):

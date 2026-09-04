@@ -202,3 +202,173 @@ not retroactively. When in doubt, log it.
 - **Ambiguous or undecided:** ARCHITECTURE.md §20 lists `EMBEDDING_BACKEND` default `local`. A fresh `docker compose up` / `make test` with `local` would require downloading model weights (network + GPU/CPU heavy), breaking "core flows work offline".
 - **Decision & rationale:** The **committed `.env.example`** ships `stub` for both backends so a fresh checkout runs fully offline (deterministic pseudo-embeddings / lexical rerank via `app.llm.stub`). `local` and `gateway` remain the intended non-dev backends. ARCHITECTURE.md §20 updated to read `stub (dev) / local | gateway` for these two rows. Config default in `app/config.py` also set to `stub` to match the shipped file.
 - **Reversible?:** yes — one env var per backend.
+
+---
+
+## Phase 1 — Checkpoint 1 corrections (triggered by operator-supplied guideline PDFs)
+
+> Entries #26–#30 arose from the operator replacing the generated synthetic
+> `SYNTH-GL-*.md` fixtures with three real multi-page clinical guideline PDFs in
+> `data/sample_guidelines/` (WHO recommendations on newborn health, May 2017,
+> 26 pp; WHO recommendations for management of serious bacterial infections in
+> infants aged 0–59 days, Dec 2024, 107 pp; Comprehensive Newborn Care
+> Protocols, Ministry of Health Kenya, Nov 2022, 174 pp — text + tables +
+> figures/algorithms). **These entries record the decisions as PROPOSED and are
+> pending explicit Checkpoint 1 confirmation; a follow-up entry will confirm or
+> revise each.** ARCHITECTURE.md / ARCHITECTURE-ESSENTIALS.md edits are drafted
+> but not yet applied, per the "do not proceed until confirmed" instruction.
+
+### 26. Default dev guideline corpus is operator-provided real PDFs, not generated synthetic docs
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-006, PRD-001, PRD-A2 (supersedes / narrows DEVIATIONS #22)
+- **Ambiguous or undecided:** DEVIATIONS #22 made `fetch_sample_guidelines.py` *generate* three tiny synthetic Markdown "guidelines" by default. Those do not resemble how real clinical guidelines are structured (multi-page, GRADE recommendation sets, clinical pathways, dosing tables, algorithm figures), so ingestion/chunking/retrieval/citation work built on them would be tuned to an unrepresentative fixture.
+- **Decision & rationale (PROPOSED):** `data/sample_guidelines/` holds **only the real corpus**. The script (renamed `prepare_sample_guidelines.py`, `make prepare-guidelines`; `fetch-guidelines` kept as an alias) no longer generates content by default: it scans for real guideline files, checks each has a `manifest.json` entry, and warns (does not invent) for any missing metadata. Generating the tiny synthetic set is now opt-in (`--allow-synthetic` / `GUIDELINES_ALLOW_SYNTHETIC=true`) and is a **CI-only offline fixture**; those files move to `backend/tests/fixtures/guidelines/`. With no real docs and no flag the script exits non-zero telling the operator to add guideline PDFs.
+- **Reversible?:** yes — the synthetic generator remains available behind a flag; nothing about the data model changes.
+
+### 27. Guideline document-format heterogeneity — chunking needs format profiles, not one recommendation model
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** ARCH-013 (§6), SCOPE-1.2 (§9.1), PRD-004
+- **Ambiguous or undecided:** ARCHITECTURE.md §6 rule 1 and its Rationale assume every guideline is a set of numbered GRADE recommendation statements ("… is recommended. (Strong recommendation, moderate certainty)"). The provided corpus shows at least three distinct formats: **GRADE recommendation set** (WHO 2017/2024), **clinical protocol / care pathway** (Kenya MOH: numbered pathways, step lists, dosing tables, algorithm flowcharts — no GRADE statements), and **narrative/background**. "Atomic recommendation" is therefore publisher/format-dependent.
+- **Decision & rationale (PROPOSED):** Introduce a per-document `format_profile ∈ {grade_recommendations, clinical_protocol, narrative}` (detected at ingest and/or set in the manifest). Each profile defines the atomic unit: `grade_recommendations` → recommendation statement + strength/certainty/population qualifiers (current rule 1); `clinical_protocol` → a numbered protocol step / pathway node + its sub-bullets + any dose/parameter table bound to that step, kept atomic (`chunk_type = protocol_step`); `narrative` → prose chunking only (rule 2). SCOPE-1.2 reported-content framing gains a protocol variant ("Protocol X, step N states…", "Per [source] pathway, the documented step is…") — still reported-content, never directive. §6 Rationale reworded to say the atomic unit is profile-dependent while keeping the safety argument.
+- **Reversible?:** yes — additive: a new `chunk_type` value and a per-document enum; documents without a detected profile fall back to `narrative`.
+
+### 28. Figures / algorithms / flowcharts — add a `figure` chunk type; OCR out of scope
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** ARCH-013 (§6), ARCH-015 (§8.3), ARCH self-critique §21a
+- **Ambiguous or undecided:** §6 covered prose / recommendation / table / list / criteria but was silent on figures. The Kenya MOH protocol is algorithm/flowchart-heavy and a clinical-pathway flowchart is frequently the content a clinician needs; a citation landing "near" a figure with no figure handling would have wrong or empty support.
+- **Decision & rationale (PROPOSED):** Add `chunk_type = figure`: one chunk per figure holding the caption, any text extractable from the image region as **vector text already in the PDF** (embedded text layer), the nearest heading, and a stored page + bounding-box reference so the citation view can show the figure crop. **OCR is out of scope for MVP** — a figure with no extractable text is retained for citation/`expand_context` but is embedded from its caption only, weighted down in dense retrieval, and flagged so the §8.3 grounding check treats a caption-only / no-text figure as **at most `weak` support** (never the sole support for a claim → forces `weak_support` queue or escalation). Low overall extractable-text ratio → low `parse_quality`, visible badge, admin review before the document's chunks become retrievable.
+- **Reversible?:** yes — additive `chunk_type` value + one grounding rule.
+
+### 29. Document ingest metadata is operator-supplied via a per-file manifest, never inferred from PDF metadata — new ARCH-038; add `document.licence`
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** ARCH-038 (NEW — proposed), ARCH §5.1, ARCH §4.1, PRD-004, PRD-A2
+- **Ambiguous or undecided:** §5.1 step 1 says `publisher` / `version_label` / `effective_date` are "recorded" but never says from where. All three provided PDFs have **empty PDF metadata** (`/Title` is null); version/effective-date live in the filename / cover page only. There is also no place to record each document's licence, which PRD-A2 requires be checked.
+- **Decision & rationale (PROPOSED):** New decision **ARCH-038** — `POST /ingest/documents` takes the file plus a metadata object (`title`, `publisher`, `external_ref`, `version_label`, `effective_date`, `licence`, `topic_tags`, optional `format_profile`, optional `language`); batch/bundled ingestion reads the same fields per file from a sidecar `data/sample_guidelines/manifest.json`. Metadata is **never auto-committed from PDF metadata**; a cover-page heuristic may only *suggest* values for the admin to confirm. Add a `licence` column to `corpus.document`. Repo ships `data/sample_guidelines/manifest.example.json` (tracked) and gitignores the real `manifest.json` (same pattern as `.env`).
+- **Reversible?:** partially — the manifest ingestion path and the `licence` column are additive; removing them later would need a migration.
+
+### 30. Synthetic patient-record generator clinical domain must match the ingested guideline corpus domain
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-006, PRD-A3, SCOPE-2.1, SCOPE-2.2, ARCH §15 (relates to DEVIATIONS #23)
+- **Ambiguous or undecided:** ARCHITECTURE.md §5.2 / §15.1 implicitly assume the synthetic records and the guideline corpus are in the same clinical domain (§15.1 step 2: "a synthetic record whose fields satisfy a chosen guideline's applicability"). The provided corpus is **neonatal / newborn / young-infant**; the Phase-1 `generate_synthetic_records.py` produces **adult inpatient** records (COPD, atrial fibrillation, adult drug doses). SCOPE-2.1 (stage classification against extractable criteria), SCOPE-2.2 (missing-info vs guideline requirements), and the auto-question generator all require record ↔ guideline-criteria domain overlap, which currently does not exist.
+- **Decision & rationale (PROPOSED):** The record **schema** (`app/schemas/record.py`) stays domain-agnostic in structure. Add a generator `--domain` / `RECORD_DOMAIN` profile selecting the domain-specific content library (problem list, medications + weight-based dose patterns, vitals reference ranges, care settings, staging vocabulary). Ship a `neonatal` profile as the **default**, matching the bundled corpus; keep `adult_inpatient` as a second profile. A short note is added to §5.2 / §15 stating the generator domain must correspond to the ingested corpus.
+- **Reversible?:** yes — profile selection is a flag; the schema and existing adult content library are retained.
+
+### 31. Checkpoint 1 confirmation of #26–#30 — Approach A, applied
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-006, PRD-001, PRD-004, PRD-A2, PRD-A3, ARCH-013, ARCH-038, SCOPE-1.2, SCOPE-2.1, SCOPE-2.2, ARCH §5.1/§5.2/§6/§8.3/§9.1/§15/§20/§21a
+- **Ambiguous or undecided:** #26–#30 were logged as PROPOSED pending explicit operator confirmation at Checkpoint 1.
+- **Decision & rationale (CONFIRMED):** Operator confirmed on 2026-09-01: **Approach A** (`RECORD_DOMAIN` default = `neonatal`, matching the bundled corpus; `adult_inpatient` retained as an option) and instructed "apply the doc updates and the prepare-guidelines rework". Applied: ARCHITECTURE.md §3 (new ARCH-038), §4.1 (`document.licence`, `document_version.format_profile`/`parse_quality`, `chunk.chunk_type` += `protocol_step`/`figure`, `chunk.figure_ref`), §5.1 (manifest-supplied metadata; OCR out of scope; `parse_quality` gate), §5.2 (`RECORD_DOMAIN`), §6 (rule 0 format profile, rule 1b `protocol_step`, rule 3b `figure`, reworded Rationale), §8.3 (figure-support cap, step 5), §9.1 SCOPE-1.2 (protocol framing variant), §15 (domain-match note), §20 (`SAMPLE_GUIDELINES_DIR`, `GUIDELINES_ALLOW_SYNTHETIC`, `INGEST_MIN_PARSE_QUALITY`, `RECORD_DOMAIN`), §21a; ARCHITECTURE-ESSENTIALS.md §2 + §12; SQLAlchemy models `app/db/models/corpus.py`; `scripts/prepare_sample_guidelines.py` (replaces `fetch_sample_guidelines.py`, kept as a shim) + `data/sample_guidelines/manifest.example.json`; `app/config.py`, `.env.example`, `Makefile`, `README.md`, `.gitignore`; `scripts/generate_synthetic_records.py` gains `--domain` with a `neonatal` content library (default) and the existing `adult_inpatient` library. The synthetic `SYNTH-GL-*.md` fixtures now live under `backend/tests/fixtures/guidelines/` (generated on demand) and were removed from `data/sample_guidelines/`.
+- **Reversible?:** yes — all changes are additive or config-gated; `#26–#30` "Reversible?" notes still hold.
+
+### 32. Patient-record schema bumped to 1.1.0 to support the neonatal domain
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-002, PRD-003, PRD-A3, SCOPE-2.1, SCOPE-2.2 (extends DEVIATIONS #23, #30, #31)
+- **Ambiguous or undecided:** DEVIATIONS #23 fixed the record schema at 1.0.0 with adult inpatient fields. Approach A (#31) makes `neonatal` the default `RECORD_DOMAIN`, but a credible neonatal record needs **weight**, **gestational age**, and **day of life** — none of which existed in 1.0.0. DEVIATIONS #23 said field refinements "bump `SCHEMA_VERSION` and are logged as new deviations".
+- **Decision & rationale:** `SCHEMA_VERSION → 1.1.0`. Added (all optional/nullable, so 1.0.0 records still validate): `Vitals.weight_g`, `Vitals.mean_bp_mmhg`, `Encounter.gestational_age_weeks`, `Encounter.birth_weight_g`, `Encounter.day_of_life`. `data/record_schema.json` updated to match. No field removed or renamed; no migration needed for the append-only `patient_record` snapshot table (payloads are JSON blobs tagged with their `schema_version`).
+- **Reversible?:** yes — additive nullable fields; a consumer that ignores them behaves exactly as under 1.0.0.
+
+---
+
+## Phase 1 — Checkpoint 1 corrections (triggered by an operator-supplied de-identified newborn dataset)
+
+> The operator added a real **de-identified, anonymised newborn dataset** at
+> `data/sample_records/rag_dataset.csv` (54 MB; long/EAV format —
+> `key, field_name, field_value, context`; **40,871 patients**, one assessment
+> snapshot each; Kenya Newborn Unit, 2021; 32 source variables across 6
+> contexts: demographics, encounter_details, vitals, history_examination,
+> interventions, medication) and asked to ingest it instead of generating
+> synthetic records, mapping its fields onto `app/schemas/record.py`.
+> Entries #33–#36 are **PROPOSED — pending explicit Checkpoint 1 confirmation**;
+> #37 is a protective change applied immediately. ARCHITECTURE.md body edits and
+> all code/schema/script changes are drafted, **not yet applied**.
+
+### 33. Introduce a `deidentified` patient-data class alongside `synthetic` — departs from constraint #1
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-C1, PRD-081, PRD-080, PRD-A3, ARCH §5.2, ARCH-039 (NEW — proposed)
+- **Ambiguous or undecided:** Constraint #1 / PRD-081 say **all** development/test/demo data must be **synthetic**; DEVIATIONS #16/#21 added an ingestion heuristic that rejects any "real-looking" batch lacking the `synthetic-generator-v1` marker. The operator has now supplied a **real** dataset (de-identified/anonymised) and instructed that it be ingested and used in place of synthetic records. This is a genuine departure from constraint #1 that only the operator can authorise.
+- **Decision & rationale (PROPOSED — CONFIRM):** Add a `data_class ∈ {synthetic, deidentified}` concept. `deidentified` data:
+  - carries `dataset_provenance = "deidentified-anonymised"` and a **dataset id**;
+  - is admitted only with an **operator attestation** — a tracked `DATASET.md` sidecar (source, collection period/site, de-identification method + standard, consent/ethics basis, licence, known residual identifiers) **and** an explicit `--attest-deidentified` flag on the loader / `attestation` field on the API;
+  - is otherwise treated **exactly like PHI** everywhere downstream: envelope-encrypted at rest, field-level RBAC, RLS, purpose-of-use, full audit, never leaves the deployment, never used for training (PRD-080/082-089 unchanged);
+  - the real-data rejection heuristic (DEVIATIONS #16/#21) is updated to *allow* a batch that declares `data_class = deidentified` **with** a valid attestation, and continues to hard-reject anything that is neither marked-synthetic nor attested-deidentified.
+  ARCHITECTURE.md constraint framing (§17.1 / §5.2) and PRD-081 wording to be amended to "synthetic **or** operator-attested de-identified" on confirmation.
+- **Reversible?:** partially — the `data_class` field and attestation gate are additive; removing the class would mean deleting any ingested de-identified data.
+
+### 34. Ingest EAV/long CSV via a reusable pivot + an external field-mapping spec; reorganise `data/`
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-002, PRD-003, PRD-006, ARCH §5.2, ARCH-039 (NEW — proposed)
+- **Ambiguous or undecided:** ARCHITECTURE.md §5.2 assumed record ingestion is one JSON/CSV row per patient against the Pydantic schema. The supplied dataset is **entity-attribute-value / long** (`key, field_name, field_value, context`) and its variable names do not match `record.py`. There was also no home in `data/` for a non-synthetic record dataset, and `data/` mixes concerns.
+- **Decision & rationale (PROPOSED — CONFIRM):**
+  - New `app/ingestion/eav.py` — deterministic long→wide pivot keyed on `key`, then apply a declarative **mapping spec** (`field_mapping.yaml`): per source field → `{target: "<record.py path>", transform: "<named transform>", context: "<source context>"}`, plus `list_targets` groups for repeated-field families (exam findings, interventions, medications). The same spec is the contract for **file** ingestion now and a **pull API** later (b).
+  - New `app/ingestion/sources/` — `PatientDataSource` interface with `FileEavSource` (implemented) and `RestApiPullSource` (**stub**, Phase 2+: configurable endpoint + auth + incremental backfill by `key`/updated-since).
+  - New script `scripts/ingest_deidentified_records.py` (`--csv --mapping --dataset-id --attest-deidentified --out --limit`).
+  - **Folder reorg (proposed):**
+    ```
+    data/
+      record_schema.json
+      sample_guidelines/            (unchanged — the guideline corpus)
+      patient_records/
+        synthetic/                  (was data/synthetic_records/; generator output)
+        deidentified/
+          newborn_nbu_2021/
+            rag_dataset.csv         (moved from data/sample_records/)
+            DATASET.md              (operator-filled provenance/attestation)
+            field_mapping.yaml      (the mapping spec for this dataset)
+      eav_cache/  eval_snapshots/
+    ```
+    `data/sample_records/` retired. `.gitignore` extended so no dataset file (synthetic or de-identified) is ever committed; only `DATASET.md` + `field_mapping.yaml` + `.gitkeep` are tracked (#37).
+- **Reversible?:** yes — the pivot + mapping spec + sources seam are additive; the folder move is a one-time relocation with `Makefile`/`README`/config path updates.
+
+### 35. Record-schema additions (→ 1.2.0) for exam findings, interventions, capillary refill — plus a name-field CONFLICT
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-002, PRD-003, PRD-A3, SCOPE-2.1, SCOPE-2.2 (extends DEVIATIONS #23, #32)
+- **Ambiguous or undecided:** The dataset carries structured clinical signs (10 boolean history/examination findings), supportive interventions (7 booleans), specific antimicrobials (5 booleans), and capillary refill (1–3 s) — none of which have a home in `record.py` v1.1.0. Operator instruction (d): additions/mappings only; **conflicts need confirmation**.
+- **Decision & rationale (PROPOSED — CONFIRM):** `SCHEMA_VERSION → 1.2.0`, additions only (all optional/nullable):
+  - `Vitals.capillary_refill_seconds: float | None`
+  - new `ExamFinding {name: str, present: bool, recorded_at: datetime | None}` + `PatientRecord.examination_findings: list[ExamFinding] = []`
+  - new `Intervention {name: str, active: bool = True, started_at: datetime | None}` + `PatientRecord.interventions: list[Intervention] = []`
+  - the 5 named antimicrobials map onto the **existing** `medications: list[Medication]` (`name` = drug, `active` = boolean; dose/route/frequency null).
+  **CONFLICT requiring confirmation:** `PatientRecord.given_name: str` and `family_name: str` are **required**; a de-identified dataset has no names. Recommended resolution: make both `str | None = None` (a name is genuinely not always present, and de-identified data by definition omits it). This changes existing field definitions, so it is held for operator confirmation. Alternatives: populate with `""`/`"REDACTED"` on ingest (keeps the schema, hides the fact that no name exists), or gate validation on `data_class`.
+- **Reversible?:** additions — yes. Name-field change — yes (widening a type; existing callers unaffected), but it *is* a change to an existing field, hence the confirmation gate.
+
+### 36. `admission_date_time` is a retained date identifier — handling pending
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-080, PRD-083, PRD-C1, PRD-C2
+- **Ambiguous or undecided:** The dataset retains full admission timestamps (`2021-01-09 00:45:00`). Exact dates are a direct identifier under HIPAA Safe Harbor and equivalent frameworks, so the dataset is "de-identified" under some other basis (limited dataset / ethics approval) rather than Safe Harbor. The architecture already encrypts every record field at rest and audits access, but does not date-shift.
+- **Decision & rationale (PROPOSED — CONFIRM):** Default proposal — **retain `admission_date_time` as-is**, mapped to `encounter.admitted_at`, protected by the same envelope encryption + RBAC + audit as all record fields (it is needed for `day_of_life` reconstruction, vitals timestamping, and ordering). Alternative if the operator prefers stricter de-identification: an ingest-time transform (`date_shift` per `key`, or generalise to month) declared in `field_mapping.yaml`. The operator's `DATASET.md` must state the de-identification basis so this choice is documented.
+- **Reversible?:** yes — the transform is a mapping-spec option; re-ingest applies it.
+
+### 37. `.gitignore` extended so real/de-identified patient datasets are never committed — APPLIED NOW
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-C1, PRD-C2, PRD-080
+- **Ambiguous or undecided:** `data/sample_records/rag_dataset.csv` (54 MB of real de-identified patient data) was **not** covered by any `.gitignore` rule and would have been committed on the next `git add -A`.
+- **Decision & rationale (APPLIED):** Added `data/sample_records/*` and `data/patient_records/**` to `.gitignore`, tracking only `.gitkeep`, `DATASET.md`, and `field_mapping.yaml`. Applied immediately as a protective measure (not deferred to confirmation): committing real patient data — even de-identified — is not acceptable. No other change was made pending confirmation.
+- **Reversible?:** trivially (it is a `.gitignore` line), but there is no reason to.
+
+### 38. Checkpoint 1 confirmation of #33–#37 — C1/C2/C3 confirmed, applied
+- **Date / phase:** 2026-09-01 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-002, PRD-003, PRD-006, PRD-080, PRD-081, PRD-C1, PRD-A3, ARCH-039, ARCH §4.2/§5.2/§17.1/§20, SCOPE-2.1, SCOPE-2.2
+- **Ambiguous or undecided:** #33–#36 were logged as PROPOSED pending operator confirmation of three points (C1 real de-identified data class; C2 required name fields; C3 admission-datetime handling).
+- **Decision & rationale (CONFIRMED & APPLIED):** Operator confirmed 2026-09-01: **C1** — add `data_class ∈ {synthetic, deidentified}` with an attestation gate, de-identified data handled exactly as PHI; **C2** — `PatientRecord.given_name`/`family_name` widened to `str | None = None`; **C3** — `admission_date_time` retained as-is (encrypted) mapped to `encounter.admitted_at`. Then instructed "apply the mapping + scripts + folder reorg". Applied:
+  - **Schema v1.2.0** (`app/schemas/record.py`, `data/record_schema.json`): `Vitals.capillary_refill_seconds`; new `ExamFinding` + `examination_findings[]`; new `Intervention` + `interventions[]`; `given_name`/`family_name` optional; new `DEIDENTIFIED_PROVENANCE`. `required` in the JSON schema reduced to `[record_id, mrn]`.
+  - **`app/schemas/enums.py`**: `DataClass{SYNTHETIC, DEIDENTIFIED}`.
+  - **`app/ingestion/eav.py`**: long→wide pivot (`load_wide`), `MappingSpec.from_yaml`, transform registry (`identity/to_int/to_float/kg_to_g/sex_norm/bool_truthy/parse_datetime/none_literal_to_null`), `apply_mapping` (dotted paths incl. `vitals.0.x`, `list_targets`, `derived`, `defaults`), `build_records`.
+  - **`app/ingestion/sources/`**: `PatientDataSource` (base), `FileEavSource` (implemented), `RestApiPullSource` (stub — pull-API seam, PRD-003).
+  - **`app/ingestion/records.py`**: `DataClass`-aware `guard_batch` + `DatasetAttestation` (9 required fields) + `MissingAttestationError`; `looks_like_real_data`/`ingest_records` updated.
+  - **`app/db/models/records.py`**: `patient.data_class`, `patient_record.dataset_id`; `source` allows `eav_file`.
+  - **`scripts/ingest_deidentified_records.py`** (new) — refuses without `--attest-deidentified` and a complete `DATASET.md` front-matter attestation. **`app/api/routes/ingest.py`**: `POST /ingest/records/eav` stub.
+  - **Folder reorg (DEVIATIONS #34):** `data/synthetic_records/` → `data/patient_records/synthetic/`; `data/sample_records/rag_dataset.csv` → `data/patient_records/deidentified/newborn_nbu_2021/rag_dataset.csv` (+ tracked `DATASET.md` template + `field_mapping.yaml`); `data/eav_cache/` added; `data/sample_records/` retired. `.gitignore` reworked so **no** dataset file is committable (only sidecars). `data/sample_records/` `.gitignore` lines replaced by `data/patient_records/**`.
+  - **Config/docs:** `PATIENT_RECORDS_DIR`, `DEIDENTIFIED_ATTESTATION_REQUIRED` in `app/config.py` + `.env.example`; `Makefile` `ingest-deid` target + `gen-data` out-path; `pyproject.toml` adds `pyyaml`; ARCHITECTURE.md §3 (ARCH-039) / §4.2 / §5.2 (rewrite) / §17.1 / §20; ARCHITECTURE-ESSENTIALS.md §0/§11/§12; PRD.md constraint #1 preamble + PRD-081 + PRD-C1 + PRD-A3; CLAUDE.md §3 rule 1.
+  - **Tests:** `test_eav_mapping.py` (pivot/transforms/list families/real dataset — skipped in CI), `test_ingest_deidentified.py` (attestation gate). 71 passing.
+- **Reversible?:** additions and config gates are reversible; the folder move and the name-field widening are one-way but low-risk (widening a type; a relocation with path updates). `#33–#37` "Reversible?" notes still hold.
+
+### 39. `Medication`/`Intervention` gain `stopped_at`; record-schema design principles stated → schema v1.3.0
+- **Date / phase:** 2026-09-02 / Phase 1 (Checkpoint 1)
+- **Requirement ID(s):** PRD-002, PRD-003, PRD-A3, ARCH-039, ARCH §4.2 (new "Record schema — design notes"), ARCH §5.2, SCOPE-2.1, SCOPE-2.2 (extends DEVIATIONS #23, #32, #35)
+- **Ambiguous or undecided:** `Medication` and `Intervention` had `started_at` but no interval end, so a medication that stops mid-encounter (or is captured by a future longitudinal API) could not be represented. Operator also asked (b) that `record.py` stay small and API-ingestible — but there was **no stated design principle** in ARCHITECTURE.md for what belongs in the schema vs. an adapter, or how temporal entities are modelled, so each addition (v1.1→v1.2→…) has been ad hoc.
+- **Decision & rationale:**
+  - **Schema v1.3.0** — added `Medication.stopped_at: datetime | None = None` and `Intervention.stopped_at: datetime | None = None` (interval end; null = ongoing/unknown). Additive/optional; older records validate. `data/record_schema.json` synced. (Operator's example spelled it `stoped_at`; used the correct `stopped_at`, pairing with `started_at`.)
+  - **Design principles written into ARCHITECTURE.md §4.2** ("Record schema — design notes") and ARCHITECTURE-ESSENTIALS.md §1a: one canonical `PatientRecord`, flat + **source-agnostic** (all source quirks live in the mapping spec / `PatientDataSource` adapter); **temporal entities** (`Medication`, `Intervention`) use a `started_at`/`stopped_at` pair, **point-in-time entities** (`Vitals`, `LabResult`, `ExamFinding`) use one `*_at`; repeated data is `list[TypedSubModel]`; evolution is additive-only, gated by `schema_version` (an API client on an older version still validates). This is the answer to (b) — it keeps `record.py` small and makes future REST-API ingestion a matter of writing another mapping spec, not extending the schema.
+  - **Mapping** — the `newborn_nbu_2021` `field_mapping.yaml` already sets each medication's/intervention's `started_at` from `admission_date_time`, i.e. **equal to `encounter.admitted_at`** for every record (this dataset has no per-item start time; `stopped_at` has no source and stays null). Made explicit in the YAML comments and asserted in `tests/test_eav_mapping.py` (`test_medication_and_intervention_started_at_equals_admitted_at`, plus a real-dataset check). `field_mapping.yaml` + the TINY test mapping bumped to `schema_version: "1.3.0"`.
+  - Two `test_ingest_deidentified.py` tests were reworked because the operator has now **completed** the `DATASET.md` attestation (it is no longer `TODO_CONFIRM`): the "front-matter lists all fields" test is now a structural check, and the "refuses incomplete attestation" test builds an incomplete attestation in a tmp dir; a new skip-if-absent test confirms a **complete** attestation + `--attest-deidentified` ingests 25 records successfully.
+- **Reversible?:** yes — `stopped_at` is an additive nullable field; the design-principles text is documentation. Note: dataset provenance per the completed `DATASET.md` is the **Clinical Information Network (CIN)**, newborn units, 2021–2024 (earlier entries #33/#34 said "Kenya Newborn Unit, 2021" before the attestation was filled — not edited here, append-only).

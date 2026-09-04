@@ -16,9 +16,12 @@ classes:
 1. **External clinical/government documents** — clinical guidelines, protocols,
    formularies (PDF and similar).
 2. **Internal patient-level records** — structured records supplied via flat
-   file (CSV/JSON) or API. **Treated as PHI by default, everywhere, including
-   development.** Development and demo data is **100% synthetic** and generated
-   by this project.
+   file (CSV/JSON or EAV/long) or API. **Treated as PHI by default, everywhere,
+   including development.** Patient data is either **synthetic** (project-
+   generated) or an **operator-attested de-identified dataset** (admitted only
+   with a complete `DATASET.md` attestation and then handled exactly as PHI —
+   see ARCHITECTURE.md ARCH-039 / DEVIATIONS.md #33). Real, non-de-identified
+   patient data is never ingested, requested, or accepted.
 
 The system pairs hybrid retrieval (dense + BM25 + reranking) with a
 **multi-agent orchestration layer** (tool use, persistent memory, human-in-the-
@@ -161,7 +164,7 @@ IDs are permanent. New requirements append; existing IDs are never renumbered.
 | ID | Requirement |
 |---|---|
 | PRD-080 | Every patient-record field is treated as **PHI by default**, in all environments. |
-| PRD-081 | **No real PHI** is ever ingested, requested, or accepted. All dev/test/demo data is synthetic and project-generated. |
+| PRD-081 | **No real, non-de-identified PHI** is ever ingested, requested, or accepted. Patient data is either project-generated **synthetic** data (carrying the `synthetic-generator-v1` marker) or an **operator-attested de-identified dataset** (complete `DATASET.md` attestation + explicit intent, then handled exactly as PHI — ARCH-039 / DEVIATIONS.md #33). Any real-looking batch with neither marker nor attestation is hard-rejected. Dataset files are never committed to version control. |
 | PRD-082 | **Encryption in transit** for all service-to-service and client-to-service communication. |
 | PRD-083 | **Encryption at rest** for PHI, including database storage and backups; application-level encryption for PHI free-text fields and stored prompt/response text. |
 | PRD-084 | **Field-level access control**: agents and users receive least-privilege field subsets of patient records; access is checked at the API layer and the data layer. |
@@ -205,7 +208,7 @@ IDs are permanent. New requirements append; existing IDs are never renumbered.
 
 | ID | Constraint |
 |---|---|
-| PRD-C1 | No real PHI, ever. Synthetic data only. |
+| PRD-C1 | No real, non-de-identified PHI, ever. Patient data is **synthetic or operator-attested de-identified** (DEVIATIONS.md #33); de-identified data is handled exactly as PHI end to end. |
 | PRD-C2 | PHI-aware architecture: encryption at rest & in transit, field-level access control, immutable audit logging are core, not stretch. |
 | PRD-C3 | No diagnostic/treatment generation. Surface and cite retrieved material only. Disclaimer layer required. Agents defer clinical judgement to the human user. |
 | PRD-C4 | Grounding is enforced, not assumed (citation format, grounding check, low-confidence/conflict handling as HITL triggers). |
@@ -243,7 +246,7 @@ Each non-goal is a tracked decision.
 |---|---|
 | PRD-A1 | A self-hosted LLM gateway endpoint is available (or stubbed) and reachable from the backend; its model catalogue is provided via config. The build does not depend on any specific hosted model provider. |
 | PRD-A2 | Sample public guideline PDFs are obtainable for development (bundled or fetched by script). Their licences permit local development use. |
-| PRD-A3 | The internal patient-record schema is stable enough to fix in Phase 1; synthetic data mirrors that schema. Real records are never used. |
+| PRD-A3 | The internal patient-record schema is stable enough to fix in Phase 1 (currently v1.3.0); synthetic data and any operator-attested de-identified dataset are mapped onto that schema. Real, non-de-identified records are never used. |
 | PRD-A4 | Reviewers (clinician-raters) are available in sufficient number to reach the 3-distinct-rater minimum for at least a sample of results; where they are not, the auto-generated set seeds the queue (PRD-066). |
 | PRD-A5 | The reference deployment is a single host with a modern GPU or an acceptable CPU fallback for embeddings/reranking (documented in README). |
 | PRD-A6 | Regulatory classification, clinical governance sign-off, and formal clinical validation are **out of engineering scope** and are prerequisites for anything in CDS-FUTURE.md. |

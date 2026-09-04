@@ -1,0 +1,69 @@
+# Field mapping: newborn_nbu_2021 (EAV) -> app/schemas/record.py  (ARCH-039; DEVIATIONS #34)
+# Consumed by app/ingestion/eav.py. The same spec would drive a future pull-API
+# that returns the same variables.
+
+dataset_id: newborn_nbu_2021
+provenance: deidentified-anonymised
+schema_version: "1.3.0"
+
+identity:
+  record_id: "{key}"
+  mrn: "DEID-{key}"
+
+# vitals rows take their timestamp from this source field
+vitals_recorded_at_from: admission_date_time
+
+# single-value source field -> record.py path + transform
+fields:
+  # --- demographics ---
+  age_days:            { target: encounter.day_of_life,             transform: to_int }
+  birth_weight:        { target: encounter.birth_weight_g,          transform: kg_to_g }   # kg -> g
+  gestational_age:     { target: encounter.gestational_age_weeks,   transform: to_float }
+  sex:                 { target: sex,                               transform: sex_norm }
+  weight_now:          { target: vitals.0.weight_g,                 transform: kg_to_g }   # kg -> g
+  # --- encounter_details ---
+  admission_date_time: { target: encounter.admitted_at,             transform: parse_datetime }
+  care_setting:        { target: encounter.care_setting,            transform: identity }
+  triage_category:     { target: encounter.triage_category,         transform: none_literal_to_null }
+  # --- vitals ---
+  heart_rate:          { target: vitals.0.heart_rate_bpm,           transform: to_float }
+  respiratory_rate:    { target: vitals.0.resp_rate_bpm,            transform: to_float }
+  oxygen_saturation:   { target: vitals.0.spo2_percent,             transform: to_float }
+  temparature:         { target: vitals.0.temperature_c,            transform: to_float }   # source misspelling, kept
+  capillary_refill:    { target: vitals.0.capillary_refill_seconds, transform: to_float }
+
+# repeated-field families -> list[...] entries (one per member recorded as TRUE/FALSE).
+# For medications AND interventions, `started_at` is taken from `admission_date_time`,
+# i.e. it equals `encounter.admitted_at` for every record (this dataset has no
+# per-drug start time). `stopped_at` is absent in the source and stays null
+# (DEVIATIONS #39). `recorded_at`/`started_at` here parse the same source string
+# with the same transform used for `encounter.admitted_at`, so the values are
+# identical by construction (asserted in tests/test_eav_mapping.py).
+list_targets:
+  examination_findings:
+    target: examination_findings
+    present_key: present
+    recorded_at_from: admission_date_time
+    ts_key: recorded_at
+    members: [apnoea, bulging_fontanelle, central_cyanosis, convulsions, crackles,
+              difficulty_feeding, floppy, grunting, indrawing, irritable]
+  interventions:
+    target: interventions
+    active_key: active
+    started_at_from: admission_date_time   # == encounter.admitted_at
+    ts_key: started_at
+    members: [antibiotics, cpap, feeds, fluids, kmc, oxygen, phenobarbital]
+  medications:
+    target: medications
+    active_key: active
+    started_at_from: admission_date_time   # == encounter.admitted_at
+    ts_key: started_at
+    members: [ampicillin, ceftazidime, ceftriaxone, gentamicin, penicillin]
+
+# derived (approximate; nullable)
+derived:
+  date_of_birth: { rule: admitted_minus_days }   # admitted_at - day_of_life
+
+# static values applied to every record where unset
+defaults:
+  consent_flags: { deidentified: true }

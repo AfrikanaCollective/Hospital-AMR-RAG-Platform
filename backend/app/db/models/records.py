@@ -4,6 +4,10 @@
 and null-ness only — NO values — so the missing-info agent can work without
 decrypting. Row-level security (ARCH-034) restricts rows to the caller's
 patient scope; enabled in the Alembic migration.
+
+`patient.data_class` (ARCH-039) records whether the source was `synthetic` or an
+attested `deidentified` dataset. Both are handled identically here (as PHI);
+the field exists for provenance/reporting, not for weaker controls.
 """
 
 from __future__ import annotations
@@ -24,8 +28,9 @@ class Patient(UUIDPk, TimestampMixin, Base):
     __tablename__ = "patient"
     __table_args__ = {"schema": SCHEMA}
 
-    mrn_enc: Mapped[bytes] = mapped_column(LargeBinary)  # encrypted synthetic MRN
-    source: Mapped[str] = mapped_column(String(16))  # file | api
+    mrn_enc: Mapped[bytes] = mapped_column(LargeBinary)  # encrypted MRN (synthesised for de-id data)
+    source: Mapped[str] = mapped_column(String(16))  # file | api | eav_file
+    data_class: Mapped[str] = mapped_column(String(16), default="synthetic")  # synthetic | deidentified (ARCH-039)
     consent_flags: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
@@ -40,6 +45,7 @@ class PatientRecord(UUIDPk, Base):
     ingested_at: Mapped[datetime] = mapped_column()
     payload_enc: Mapped[bytes] = mapped_column(LargeBinary)  # envelope-encrypted JSON
     field_index: Mapped[dict] = mapped_column(JSONB, default=dict)  # names + null-ness ONLY
+    dataset_id: Mapped[str | None] = mapped_column(String(64))  # e.g. "newborn_nbu_2021" (ARCH-039)
     source_batch_id: Mapped[uuid.UUID | None] = mapped_column()
 
 

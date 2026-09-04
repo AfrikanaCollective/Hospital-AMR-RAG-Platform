@@ -1,0 +1,60 @@
+{
+  "_comment": "Ingest metadata for the dev guideline corpus (ARCH-038 / ARCHITECTURE.md §5.1). Copy to manifest.json (gitignored) and fill/confirm every field before ingestion. Metadata is NEVER inferred from PDF metadata. One entry per file in SAMPLE_GUIDELINES_DIR; the key is the exact filename.",
+  "_licence_warning": "Confirm each document's licence and permitted use before ingesting or redistributing. WHO publications are typically released under CC BY-NC-SA 3.0 IGO but verify per document. Government-of-Kenya / Ministry of Health publications: usage terms to be confirmed with the publisher.",
+  "_fields": {
+    "title": "string (required)",
+    "publisher": "string (required)",
+    "external_ref": "publisher's document/report code, or null",
+    "version_label": "publisher version string (required)",
+    "effective_date": "YYYY-MM-DD (required)",
+    "licence": "string (required) — TODO_CONFIRM until verified",
+    "language": "BCP-47, e.g. 'en'",
+    "format_profile": "grade_recommendations | clinical_protocol | narrative (optional; detected if omitted)",
+    "topic_tags": "array of strings for coverage tracking"
+  },
+  "files": {
+    "WHO recommendations on newborn health guidelines (WHO May 2017).pdf": {
+      "title": "WHO recommendations on newborn health",
+      "publisher": "World Health Organization",
+      "external_ref": "TODO_CONFIRM",
+      "version_label": "2017 update",
+      "effective_date": "2017-05-01",
+      "licence": "TODO_CONFIRM (WHO — likely CC BY-NC-SA 3.0 IGO)",
+      "language": "en",
+      "format_profile": "grade_recommendations",
+      "topic_tags": [
+        "newborn health", "postnatal care", "home visits", "breastfeeding",
+        "cord care", "kangaroo mother care", "low birth weight"
+      ]
+    },
+    "WHO recommendations for management of serious bacterial infections in infants aged 0–59 days (WHO Dec 2024).pdf": {
+      "title": "WHO recommendations for management of serious bacterial infections in infants aged 0–59 days",
+      "publisher": "World Health Organization",
+      "external_ref": "TODO_CONFIRM",
+      "version_label": "2024",
+      "effective_date": "2024-12-01",
+      "licence": "TODO_CONFIRM (WHO — likely CC BY-NC-SA 3.0 IGO)",
+      "language": "en",
+      "format_profile": "grade_recommendations",
+      "topic_tags": [
+        "serious bacterial infection", "young infant", "neonatal sepsis",
+        "antibiotics", "0-59 days", "possible serious bacterial infection"
+      ]
+    },
+    "Comprehensive Newborn Care Protocols (Ministry of Health Kenya, Nov 2022).pdf": {
+      "title": "Comprehensive Newborn Care Protocols",
+      "publisher": "Ministry of Health, Kenya",
+      "external_ref": "TODO_CONFIRM",
+      "version_label": "November 2022",
+      "effective_date": "2022-11-01",
+      "licence": "TODO_CONFIRM (Government of Kenya / Ministry of Health)",
+      "language": "en",
+      "format_profile": "clinical_protocol",
+      "topic_tags": [
+        "newborn resuscitation", "small and sick newborn", "kangaroo mother care",
+        "neonatal jaundice", "feeding", "clinical pathways", "thermal care",
+        "respiratory distress", "birth asphyxia", "neonatal sepsis"
+      ]
+    }
+  }
+}

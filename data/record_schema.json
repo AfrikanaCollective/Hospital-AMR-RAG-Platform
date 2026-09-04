@@ -1,15 +1,15 @@
 {
-  "$comment": "Fixed patient-record schema (PRD-002, PRD-003, PRD-A3). Kept in sync with backend/app/schemas/record.py (PatientRecord). Regenerate with: python -c \"import json,app.schemas.record as r; print(json.dumps(r.PatientRecord.model_json_schema(), indent=2))\". Every field is PHI by default (PRD-080).",
-  "schema_version": "1.0.0",
+  "$comment": "Fixed patient-record schema (PRD-002, PRD-003, PRD-A3). Kept in sync with backend/app/schemas/record.py (PatientRecord). Regenerate with: python -c \"import json,app.schemas.record as r; print(json.dumps(r.PatientRecord.model_json_schema(), indent=2))\". Every field is PHI by default (PRD-080). 1.1.0 neonatal fields (DEVIATIONS #32). 1.2.0 capillary_refill_seconds, examination_findings[], interventions[]; given_name/family_name no longer required (DEVIATIONS #35, #38). 1.3.0 Medication.stopped_at + Intervention.stopped_at — interval end (DEVIATIONS #39). Temporal entities carry started_at/stopped_at; point-in-time entities carry one *_at. All additions optional.",
+  "schema_version": "1.3.0",
   "type": "object",
-  "required": ["record_id", "mrn", "given_name", "family_name"],
+  "required": ["record_id", "mrn"],
   "properties": {
     "schema_version": {"type": "string"},
-    "dataset_provenance": {"type": ["string", "null"], "description": "synthetic-generator-v1 for project-generated batches; unmarked 'real-looking' batches are rejected on ingest"},
+    "dataset_provenance": {"type": ["string", "null"], "description": "synthetic-generator-v1 | deidentified-anonymised; unmarked 'real-looking' batches are rejected on ingest"},
     "record_id": {"type": "string"},
-    "mrn": {"type": "string", "description": "synthetic medical record number"},
-    "given_name": {"type": "string"},
-    "family_name": {"type": "string"},
+    "mrn": {"type": "string", "description": "medical record number (synthesised as DEID-<key> for de-identified data)"},
+    "given_name": {"type": ["string", "null"], "description": "absent for de-identified data (1.2.0)"},
+    "family_name": {"type": ["string", "null"], "description": "absent for de-identified data (1.2.0)"},
     "date_of_birth": {"type": ["string", "null"], "format": "date"},
     "sex": {"type": ["string", "null"]},
     "encounter": {
@@ -17,9 +17,12 @@
       "properties": {
         "admitted_at": {"type": ["string", "null"], "format": "date-time"},
         "ward": {"type": ["string", "null"]},
-        "care_setting": {"type": ["string", "null"], "description": "e.g. ED, general ward, HDU, ICU"},
+        "care_setting": {"type": ["string", "null"], "description": "adult: ED/ward/HDU/ICU; neonatal: NBU/KMC/nursery/postnatal"},
         "presenting_complaint": {"type": ["string", "null"]},
-        "triage_category": {"type": ["string", "null"]}
+        "triage_category": {"type": ["string", "null"]},
+        "gestational_age_weeks": {"type": ["number", "null"], "description": "neonatal (1.1.0)"},
+        "birth_weight_g": {"type": ["number", "null"], "description": "neonatal (1.1.0)"},
+        "day_of_life": {"type": ["integer", "null"], "description": "neonatal (1.1.0)"}
       }
     },
     "problems": {"type": "array", "items": {"type": "string"}},
@@ -35,6 +38,7 @@
           "route": {"type": ["string", "null"]},
           "frequency": {"type": ["string", "null"]},
           "started_at": {"type": ["string", "null"], "format": "date-time"},
+          "stopped_at": {"type": ["string", "null"], "format": "date-time", "description": "interval end; null = ongoing/unknown (1.3.0)"},
           "active": {"type": "boolean"}
         }
       }
@@ -49,8 +53,38 @@
           "resp_rate_bpm": {"type": ["number", "null"]},
           "systolic_bp_mmhg": {"type": ["number", "null"]},
           "diastolic_bp_mmhg": {"type": ["number", "null"]},
+          "mean_bp_mmhg": {"type": ["number", "null"], "description": "neonatal (1.1.0)"},
           "temperature_c": {"type": ["number", "null"]},
-          "spo2_percent": {"type": ["number", "null"]}
+          "spo2_percent": {"type": ["number", "null"]},
+          "weight_g": {"type": ["number", "null"], "description": "monitored vital in neonatal care (1.1.0)"},
+          "capillary_refill_seconds": {"type": ["number", "null"], "description": "perfusion (1.2.0)"}
+        }
+      }
+    },
+    "examination_findings": {
+      "type": "array",
+      "description": "history/examination signs, structured so present/absent is preserved (1.2.0)",
+      "items": {
+        "type": "object",
+        "required": ["name", "present"],
+        "properties": {
+          "name": {"type": "string"},
+          "present": {"type": "boolean"},
+          "recorded_at": {"type": ["string", "null"], "format": "date-time"}
+        }
+      }
+    },
+    "interventions": {
+      "type": "array",
+      "description": "supportive/therapeutic interventions, distinct from medications (1.2.0)",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "active": {"type": "boolean"},
+          "started_at": {"type": ["string", "null"], "format": "date-time"},
+          "stopped_at": {"type": ["string", "null"], "format": "date-time", "description": "interval end; null = ongoing/unknown (1.3.0)"}
         }
       }
     },

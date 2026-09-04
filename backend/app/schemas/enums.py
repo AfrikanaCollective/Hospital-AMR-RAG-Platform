@@ -89,3 +89,15 @@ class DocumentVersionStatus(StrEnum):
     ACTIVE = "active"
     SUPERSEDED = "superseded"
     WITHDRAWN = "withdrawn"
+
+
+class DataClass(StrEnum):
+    """Patient-data provenance class (ARCH-039; DEVIATIONS #33).
+
+    Both are legitimate dev inputs. `DEIDENTIFIED` is admitted only with an
+    operator attestation and is then treated exactly as PHI everywhere
+    downstream (encryption, RBAC, RLS, audit, no egress, no training).
+    """
+
+    SYNTHETIC = "synthetic"
+    DEIDENTIFIED = "deidentified"
