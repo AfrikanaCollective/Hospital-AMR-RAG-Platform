@@ -47,6 +47,23 @@ services:
       timeout: 3s
       retries: 5
     user: "10001:10001"
+    # Inert until EMBEDDING_BACKEND/RERANKER_BACKEND=local is implemented
+    # (Phase 2) and the image is built with the `local-models` extra
+    # (DEVIATIONS.md #43). Persists downloaded HF model weights across
+    # restarts instead of re-fetching them from the internet each time.
+    volumes:
+      - hf-model-cache:/home/appuser/.cache/huggingface
+    # Optional GPU passthrough for local embedding/reranker inference (needs
+    # the NVIDIA Container Toolkit on the host). CPU fallback works without
+    # this — see README.md "Requirements". Uncomment when RERANKER_DEVICE or
+    # EMBEDDING_BACKEND local-serving is actually enabled in Phase 2:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
   worker:
     build:
@@ -59,6 +76,8 @@ services:
       qdrant: {condition: service_started}
     command: ["celery", "-A", "app.worker.celery_app", "worker", "-l", "info"]
     user: "10001:10001"
+    volumes:
+      - hf-model-cache:/home/appuser/.cache/huggingface
 
   redis:
     image: redis:7-alpine
@@ -126,3 +145,4 @@ volumes:
   pg-data:
   redis-data:
   qdrant-data:
+  hf-model-cache:

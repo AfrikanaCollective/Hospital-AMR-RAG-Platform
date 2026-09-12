@@ -4,7 +4,7 @@ PROFILE ?= dev
 BE      ?= cd backend &&
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
-        prepare-guidelines fetch-guidelines test lint typecheck eval fmt
+        prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -51,6 +51,9 @@ fmt: ## apply ruff formatting
 
 typecheck: ## mypy
 	$(BE) mypy app
+
+lock: ## regenerate backend/requirements-lock.txt from pyproject.toml (PRD-NFR-3)
+	$(BE) pip-compile --extra dev --extra local-models --strip-extras -o requirements-lock.txt pyproject.toml
 
 eval: ## run the evaluation harness against the fixed synthetic test set
 	$(BE) python -m app.eval.run --snapshot latest

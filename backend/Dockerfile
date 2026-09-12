@@ -12,8 +12,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install -e ".[dev]"
+COPY pyproject.toml requirements-lock.txt ./
+# NOTE (DEVIATIONS.md #44b/#44c, supersedes #43's "keep it light" note): the
+# reranker is decided to always run RERANKER_BACKEND=local or =stub, never
+# =gateway (DEVIATIONS.md #44), so `local-models` (sentence-transformers +
+# torch) is installed unconditionally rather than left optional — a
+# stub-only image would silently fail once Phase 2 implements the `local`
+# branch of app/retrieval/rerank.py. This does make every build (including
+# CI, which forces RERANKER_BACKEND=stub via tests/conftest.py and never
+# exercises this code path) pay the torch install cost.
+#
+# VERIFIED (DEVIATIONS.md #44c): a real `docker build` of this image is
+# ~6.5GB, not the ~2GB originally estimated — PyPI's default `torch` wheel
+# bundles the full CUDA/cuDNN/NCCL toolkit (~1.4GB of it) even though
+# RERANKER_DEVICE=auto falls back to CPU on a host with no GPU, which is the
+# expected case here. If image size matters more than keeping this Dockerfile
+# GPU-ready out of the box, switch to the CPU-only wheel index instead:
+#   RUN pip install -r requirements-lock.txt \
+#    --index-url https://download.pytorch.org/whl/cpu \
+#    && pip install --no-deps -e .
+# (not done here — left as a follow-up; the GPU-capable wheel still works
+# correctly on CPU, it's just much larger than necessary for that case).
+#
+# `requirements-lock.txt` is the pinned dependency set (PRD-NFR-3 /
+# DEVIATIONS.md #45) — regenerate with `make lock` after changing
+# pyproject.toml, never hand-edit it. `pip install -e .` is run separately
+# with --no-deps since the lock file already pins every dependency; without
+# --no-deps pip would re-resolve them against pyproject.toml's looser ranges.
+#
+# Deliberately NOT running `pip install --upgrade pip` here (DEVIATIONS.md
+# #45a): doing so pulled pip 26.2.1, which crashes with
+# `SystemError: unknown opcode` while processing `-r requirements-lock.txt`
+# on this image's Python 3.11 — confirmed by reproducing it, then confirming
+# the base image's shipped pip (24.0) installs the identical lock file
+# without error. Pinning pip itself is exactly the kind of drift this lock
+# file exists to prevent, so the base image's own pip is used as-is rather
+# than floated to "latest".
+RUN pip install -r requirements-lock.txt \
+ && pip install --no-deps -e .
 
 COPY . .
 

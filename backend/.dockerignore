@@ -1,0 +1,17 @@
+# Backend Docker build context exclusions (DEVIATIONS.md #45a).
+#
+# Without this file, `COPY . .` in the Dockerfile pulls in whatever happens
+# to exist locally under backend/ — including a local .venv, which is
+# exactly what happened here: a `python -m venv .venv` created per this
+# repo's own README ballooned a `docker build` from ~6.5GB to ~19GB because
+# nothing told Docker to skip it.
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.git/

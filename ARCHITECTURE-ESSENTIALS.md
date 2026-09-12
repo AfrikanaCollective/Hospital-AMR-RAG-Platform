@@ -45,7 +45,8 @@ Judgment calls: [DEVIATIONS.md](DEVIATIONS.md).
 | Orchestration | LangGraph (Postgres checkpointer) | typed state, deterministic routing, HITL interrupts |
 | Async | Redis + Celery | ingestion fan-out, long agent runs, eval/IRR jobs |
 | LLM | `LLMGateway` → self-hosted gateway, `MODEL_ID` + `MODEL_ID_FALLBACKS` | config-driven, fallback routing |
-| Embeddings/rerank | config model ids; run in worker/api process (MVP) or gateway | no hardcoded model |
+| Embeddings | config model id; `local` \| `gateway` \| `stub` (config-selectable) | no hardcoded model |
+| Reranker | config model id; **decided: local**, in the `api` process (not gateway-routed) | no hardcoded model; DEVIATIONS.md #44 |
 | Auth | `AuthProvider`: dev-JWT (roles: clinician/reviewer/admin/service) + OIDC stub | full IdP deferred |
 | Frontend | React (Vite + TS), static behind nginx | typed API client |
 | Deploy | docker-compose; `stub` LLM gateway profile for offline core flows | single host, no external net for core |

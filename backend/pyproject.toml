@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "RAG platform for hospital use — grounded, cited answers with multi-agent orchestration and HITL evaluation."
 requires-python = ">=3.11"
 
-# NOTE: versions below are indicative for the Phase 1 skeleton. Pin exactly
-# (and add a lockfile) when real logic lands in Phase 2+ (PRD-NFR-3).
+# Exact versions are pinned in requirements-lock.txt (PRD-NFR-3 / DEVIATIONS.md
+# #45) — regenerate it with `make lock` after changing anything below. The
+# ranges here are the resolver's *input* constraints, not the installed
+# versions; `pip install -e .` alone (no lock) still floats within them.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -17,6 +19,14 @@ dependencies = [
     "redis>=5.2",
     "celery>=5.4",
     "httpx>=0.28",
+    # anyio>=4.15 deprecates anyio.abc.BlockingPortal (used internally by
+    # starlette.testclient at import time); pyproject's own
+    # filterwarnings=["error::DeprecationWarning"] turns that into a hard
+    # pytest collection failure for every fastapi.testclient.TestClient user
+    # (tests/test_smoke.py). Not a starlette/fastapi incompatibility — pinned
+    # here, not there, so we keep the latest fastapi/starlette otherwise.
+    # DEVIATIONS.md #45.
+    "anyio<4.15",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0",
     "qdrant-client>=1.12",
@@ -38,6 +48,7 @@ dev = [
     "types-redis",
     "faker>=30.0",           # synthetic data generator only
     "krippendorff>=0.8",     # IRR metric (ARCH-021)
+    "pip-tools>=7.4",        # `make lock` (PRD-NFR-3 / DEVIATIONS.md #45)
 ]
 # Optional local model backends (ARCH-004 / ARCH-012). Not needed with
 # EMBEDDING_BACKEND=stub / RERANKER_BACKEND=stub.

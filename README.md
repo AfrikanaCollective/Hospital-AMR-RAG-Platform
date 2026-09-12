@@ -23,8 +23,8 @@ evaluation workflow.
 | Phase | Scope | State |
 |---|---|---|
 | **0** | Product & architecture docs | ✅ complete (Checkpoint 0 approved) |
-| **1** | Agent instructions & scaffolding | 🟡 in progress — this checkpoint |
-| 2 | Ingestion & hybrid retrieval core | ⬜ not started |
+| **1** | Agent instructions & scaffolding | ✅ complete (Checkpoint 1 approved 2026-09-12) |
+| 2 | Ingestion & hybrid retrieval core | ⬜ not started — next checkpoint |
 | 3 | Multi-agent orchestration & HITL | ⬜ not started |
 | 4 | API & backend hardening | ⬜ not started |
 | 5 | React frontend | ⬜ not started |
@@ -140,6 +140,11 @@ HITL modes, rubric workflow, and the scope boundary:
 - Optional GPU for embeddings/reranking; a CPU fallback is supported but slower
   (documented per-model). Reference dev machine: modern multi-core CPU, 32 GB
   RAM, optional NVIDIA GPU.
+- The backend image installs `sentence-transformers` + `torch` by default for
+  the locally-run reranker (DEVIATIONS.md #44b) — **verified real build size
+  ~6.5GB** (DEVIATIONS.md #44c; PyPI's default `torch` wheel bundles CUDA
+  libraries not needed for a CPU-only host), not the ~2GB first estimated —
+  expect a correspondingly large first build/pull.
 
 ---
 
@@ -175,7 +180,8 @@ App: `https://localhost/` (self-signed dev cert). API docs: `https://localhost/a
 ```bash
 cd backend
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements-lock.txt   # pinned versions (PRD-NFR-3 / DEVIATIONS.md #45)
+pip install --no-deps -e .             # the local package itself, deps already satisfied above
 alembic upgrade head
 python -m scripts.seed_db
 uvicorn app.main:app --reload
@@ -200,6 +206,7 @@ cd ../frontend && npm install && npm run dev
 | `make test` | backend pytest (offline; includes gating safety tests) |
 | `make lint` | `ruff check` + `ruff format --check` |
 | `make typecheck` | `mypy` |
+| `make lock` | regenerate `backend/requirements-lock.txt` from `pyproject.toml` (PRD-NFR-3 / DEVIATIONS.md #45) — run after changing dependencies, never hand-edit the lock |
 | `make eval` | run the evaluation harness against the fixed synthetic test set |
 
 ---
@@ -216,9 +223,12 @@ All config is via environment variables / `.env` (secrets via
 | `MODEL_ID_FALLBACKS` | `` | comma-separated fallback model ids |
 | `MODEL_ID_VERIFIED` | `false` | set `true` only after checking the id against current gateway docs; `false` logs a startup warning |
 | `LLM_GATEWAY_URL` | `http://llm-gateway:8080` | self-hosted gateway |
-| `EMBEDDING_MODEL_ID` | `BAAI/bge-large-en-v1.5` | **UNVERIFIED placeholder** — confirm/override |
-| `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` | **UNVERIFIED placeholder** — confirm/override |
-| `EMBEDDING_BACKEND` | `local` | `local` \| `gateway` \| `stub` |
+| `EMBEDDING_MODEL_ID` | `BAAI/bge-large-en-v1.5` | **UNVERIFIED placeholder** — format is backend-dependent: HuggingFace repo id for `local`, the gateway's own model tag (e.g. `qllama/bge-large-en-v1.5:latest`) for `gateway` |
+| `EMBEDDING_GATEWAY_URL` / `EMBEDDING_GATEWAY_API_KEY` | `` / `` | base URL + Bearer token for the embedding gateway (`EMBEDDING_BACKEND=gateway`); set only in your local `.env`, never committed |
+| `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` | **UNVERIFIED placeholder** — HuggingFace repo id (the only format needed now that the reranker backend is decided as `local`) |
+| `RERANKER_BACKEND` | `stub` (dev/CI) | **decided: `local` in real deployments** (DEVIATIONS.md #44) — `gateway` is not a supported option for the reranker here |
+| `RERANKER_DEVICE` / `RERANKER_BATCH_SIZE` / `RERANKER_MAX_LENGTH` | `auto` / `16` / `512` | local in-process serving knobs; the `local-models` extra (sentence-transformers + torch) is installed by default in `backend/Dockerfile` and pinned in `requirements-lock.txt` (DEVIATIONS.md #44b/#45) |
+| `EMBEDDING_BACKEND` | `local` | `local` \| `gateway` \| `stub` — still config-selectable (embeddings are not decided the way the reranker is) |
 | `SECRETS_BACKEND` | `file` | `env` \| `file` \| `vault` |
 | `AUTH_PROVIDER` | `devjwt` | `devjwt` \| `oidc` |
 | `PATIENT_RECORD_VECTORS_ENABLED` | `false` | keep off unless deliberately enabling record vectorization |

@@ -92,7 +92,7 @@ is **untrusted** and is never treated as instructions.
 | **PostgreSQL** (`postgres`) | System of record: document/version/chunk metadata, patient-record store, memory, HITL/escalation, rubric/rating/IRR, audit log, users/roles. | Single database, multiple schemas. See §4. |
 | **Qdrant** (`qdrant`) | Vector store for guideline chunk embeddings (dense) + sparse (BM25-style) vectors; server-side fusion (RRF); payload filtering for access scoping. | See §3 for justification. |
 | **Self-hosted LLM gateway** (`llm-gateway`, external or stub) | Chat/completion + optional embeddings/rerank endpoints; model catalogue and fallback routing. | Model IDs from config (ARCH-005 / PRD-101). A local stub is provided for offline dev. |
-| **Embedding + reranker** | Produce dense embeddings for chunks/queries; cross-encoder rerank of candidates. | MVP: run inside `worker`/`api` process via a local model or via the gateway's embeddings endpoint, selected by config (ARCH-004). |
+| **Embedding + reranker** | Produce dense embeddings for chunks/queries; cross-encoder rerank of candidates. | Embeddings: run inside `worker`/`api` process via a local model or via the gateway's embeddings endpoint, selected by config (ARCH-004). Reranker: runs **locally** in the `api` process — decided, not gateway-routed (ARCH-012 / DEVIATIONS.md #44). |
 | **React frontend** (`frontend`) | Query interface, citation display, HITL modes, review queue. | Static build served by nginx. |
 | **Reverse proxy** (`proxy`, nginx) | TLS termination, routing `/api` → api, `/` → frontend. | Dev certs; prod certs external. |
 
@@ -113,7 +113,7 @@ is **untrusted** and is never treated as instructions.
 | **ARCH-009** | **Deploy: Docker + docker-compose**, single host, no external network dependency for core flows. | PRD-106. | k8s (over-engineered for MVP). |
 | **ARCH-010** | **Frontend: React (Vite + TypeScript)**, served static. | PRD-107; TS for typed API client generated from the OpenAPI schema. | Next.js SSR (unneeded), plain JS (loses type safety on citation/HITL payloads). |
 | **ARCH-011** | **Auth: OIDC-ready, static-JWT for MVP dev.** A `AuthProvider` interface with a seeded HS256/RS256 JWT issuer for dev and an OIDC adapter stub for prod. Roles: `clinician`, `reviewer`, `admin`, `service`. | PRD-086. Full IdP (Keycloak) is deferred to avoid MVP scope creep while keeping the seam. See DEVIATIONS.md #4. | Keycloak now (heavier), no auth (violates PRD-086). |
-| **ARCH-012** | **Reranker: config-driven cross-encoder.** Placeholder default `BAAI/bge-reranker-v2-m3` — **UNVERIFIED, flagged**; `RERANKER_MODEL_ID`. | Same rationale as ARCH-004. | Pinned model (violates C6), no reranker (precision loss). |
+| **ARCH-012** | **Reranker: config-driven cross-encoder, decided to run locally** (`RERANKER_BACKEND=local`, not gateway-routed). Placeholder default `BAAI/bge-reranker-v2-m3` — **UNVERIFIED, flagged**; `RERANKER_MODEL_ID`. | Same model-config rationale as ARCH-004. Local (not gateway) because: (1) unlike the confirmed-working embeddings gateway endpoint (DEVIATIONS.md #42), cross-encoder rerank serving was never confirmed available on the operator's gateway; (2) rerank sits on the synchronous query path (unlike ingestion-time embeddings), so an extra network hop per query is the thing to avoid; (3) `sentence-transformers.CrossEncoder` needs no separate serving stack — the `local-models` extra already covers it (DEVIATIONS.md #43/#44). | Pinned model (violates C6), no reranker (precision loss), gateway-routed rerank (adds a per-query network hop for an unconfirmed capability). |
 | **ARCH-038** | **Document ingest metadata is operator-supplied via a per-file manifest; never inferred from PDF metadata.** `POST /ingest/documents` takes the file **plus** a metadata object (`title`, `publisher`, `external_ref`, `version_label`, `effective_date`, `licence`, `topic_tags`, optional `format_profile`, optional `language`). Batch/bundled ingestion reads the same fields per file from a sidecar `data/sample_guidelines/manifest.json`. A cover-page heuristic may *suggest* values for the admin to confirm; it never auto-commits. Adds `document.licence` and `document_version.format_profile`. | Real guideline PDFs routinely ship with absent or wrong PDF metadata (all three bundled dev PDFs have an empty `/Title`); version/effective-date live in the filename or cover page. PRD-A2 also requires a per-document licence record, which had no home. See DEVIATIONS.md #29. | Parsing metadata out of the PDF (unreliable, and a silent-error source for citations); a global config block (doesn't scale past one document). |
 | **ARCH-039** | **Patient-data classes + EAV/mapping-spec ingestion + a `PatientDataSource` seam.** A `data_class ∈ {synthetic, deidentified}` (`patient.data_class`, `patient_record.dataset_id`). `deidentified` data is admitted **only** with a complete operator **attestation** (`DATASET.md` front-matter: source, collection period, site, de-identification method + standard, consent basis, licence, attested-by/date) **and** an explicit intent flag; it is then handled **exactly as PHI** everywhere downstream. Record ingestion supports both wide (one row/patient) and **EAV / long** (`key, field_name, field_value, context`) inputs; EAV is pivoted long→wide and mapped onto `app/schemas/record.py` by a **declarative `field_mapping.yaml`** (per source field → target path + named transform; `list_targets` for repeated-field families). The same mapping spec is the contract for file ingestion now and a `RestApiPullSource` (stub) later. | The operator supplied a real de-identified newborn dataset (40,871 patients, EAV, 32 variables not matching `record.py`) and instructed it be used instead of synthetic records — a departure from constraint #1 that only the operator can authorise, and a format the wide-row ingestion path could not consume. A declarative mapping keeps the transform auditable and reusable for a future pull-API. See DEVIATIONS.md #33, #34, #38. | Hard-coding the pivot + field renames in Python (not auditable, not reusable); accepting de-identified data with no attestation (weakens constraint #1 with nothing recorded); one-off scripts per dataset. |
 
@@ -642,7 +642,16 @@ until cutover. Config records `embedding_collection` so eval snapshots pin it.
 3. **Fusion.** Reciprocal Rank Fusion (RRF, k=60) of the dense and sparse
    rankings → top `FUSED_K` (default 24).
 4. **Rerank.** Cross-encoder (`RERANKER_MODEL_ID`) scores (query, chunk.text)
-   for the fused set → top `TOP_K` (default 8).
+   for the fused set → top `TOP_K` (default 8). **Decided: `RERANKER_BACKEND
+   =local`**, not gateway-routed (DEVIATIONS.md #44 — supersedes the earlier
+   #43 recommendation, now confirmed): `sentence-transformers.CrossEncoder`
+   (already in the `local-models` optional extra — `BAAI/bge-reranker-v2-m3`
+   is a standard HF cross-encoder, no separate serving stack needed), loaded
+   once per process behind a singleton and invoked off the event loop
+   (`asyncio.to_thread`), warm-loaded at API startup rather than on first
+   request. `RERANKER_DEVICE` / `RERANKER_BATCH_SIZE` / `RERANKER_MAX_LENGTH`
+   config it; model weights persist in a named Docker volume
+   (`hf-model-cache`) so they aren't re-downloaded on every restart.
 5. **Confidence assessment.**
    - `top_score < RETRIEVAL_MIN_SCORE` (default tuned on eval set) → low
      confidence.
@@ -1411,11 +1420,13 @@ All via env / `.env` (secrets via `SECRETS_BACKEND`). Non-exhaustive:
 | `MODEL_ID` | `"<set-me>"` | primary model id; **answer path refuses to start if unset/placeholder** |
 | `MODEL_ID_FALLBACKS` | `""` | comma-separated fallback model ids (fallback routing) |
 | `MODEL_ID_VERIFIED` | `false` | operator asserts the id was checked against current gateway docs; if `false`, startup logs a prominent WARN (constraint #6) |
-| `EMBEDDING_MODEL_ID` | `BAAI/bge-large-en-v1.5` *(UNVERIFIED — flagged)* | dense embedding model |
+| `EMBEDDING_MODEL_ID` | `BAAI/bge-large-en-v1.5` *(UNVERIFIED — flagged)* | dense embedding model; format is backend-dependent — a HuggingFace repo id for `local`, the gateway's own model tag (e.g. `qllama/bge-large-en-v1.5:latest`) for `gateway` (DEVIATIONS.md #42) |
 | `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_DOC_PREFIX` | `""` | instruction prefixes if the model needs them |
+| `EMBEDDING_GATEWAY_URL` / `EMBEDDING_GATEWAY_API_KEY` | `""` / `""` | base URL + Bearer token for the embedding gateway when `EMBEDDING_BACKEND=gateway`; may be a different host than `LLM_GATEWAY_URL` (DEVIATIONS.md #42); scaffolded in Phase 1, consumed once the `gateway` backend is implemented in Phase 2 |
 | `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` *(UNVERIFIED — flagged)* | cross-encoder reranker |
+| `RERANKER_DEVICE` / `RERANKER_BATCH_SIZE` / `RERANKER_MAX_LENGTH` | `auto` / `16` / `512` | local-serving knobs for `RERANKER_BACKEND=local` (DEVIATIONS.md #43/#44); not consumed until Phase 2 |
 | `EMBEDDING_BACKEND` | `stub` (dev) — `local` \| `gateway` in prod | which embedding backend; the committed `.env.example` ships `stub` for offline dev/CI (DEVIATIONS.md #25) |
-| `RERANKER_BACKEND` | `stub` (dev) — `local` \| `gateway` in prod | which reranker backend; see above |
+| `RERANKER_BACKEND` | `stub` (dev) — **`local` in prod, decided** (DEVIATIONS.md #44) | `gateway` is not a supported reranker option for this deployment — see ARCH-012 |
 | `CANDIDATE_K` / `FUSED_K` / `TOP_K` | `40` / `24` / `8` | retrieval widths |
 | `RRF_K` | `60` | RRF constant |
 | `RETRIEVAL_MIN_SCORE` / `SUPPORT_SCORE_FLOOR` / `MIN_SUPPORTING_CHUNKS` | tuned on eval | confidence thresholds |

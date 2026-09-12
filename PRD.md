@@ -182,7 +182,7 @@ IDs are permanent. New requirements append; existing IDs are never renumbered.
 | PRD-100 | Backend in Python (FastAPI). |
 | PRD-101 | The LLM model identifier is read from an **environment variable / config file** with a placeholder default. **No model name/version is hardcoded.** If a provided model name cannot be verified against current documentation, the build flags it rather than guessing. |
 | PRD-102 | The LLM integration targets a **self-hosted LLM gateway** with **fallback routing** between configured models. |
-| PRD-103 | Embedding model and reranker model identifiers are likewise config-driven with placeholder defaults (extension of PRD-101; see [DEVIATIONS.md](DEVIATIONS.md) #10). |
+| PRD-103 | Embedding model and reranker model identifiers are likewise config-driven with placeholder defaults (extension of PRD-101; see [DEVIATIONS.md](DEVIATIONS.md) #10). The reranker runs **locally** (`RERANKER_BACKEND=local`), decided rather than routed through the LLM gateway (DEVIATIONS.md #44); the embedding backend remains config-selectable (`local` \| `gateway` \| `stub`). |
 | PRD-104 | Vector store: one self-hosted store, chosen and justified in ARCHITECTURE.md. |
 | PRD-105 | Redis + Celery (self-hosted) for async ingestion and long-running agent tasks. |
 | PRD-106 | Docker / docker-compose for local self-hosted deployment; core flows work with no external network dependency. |
@@ -248,7 +248,7 @@ Each non-goal is a tracked decision.
 | PRD-A2 | Sample public guideline PDFs are obtainable for development (bundled or fetched by script). Their licences permit local development use. |
 | PRD-A3 | The internal patient-record schema is stable enough to fix in Phase 1 (currently v1.3.0); synthetic data and any operator-attested de-identified dataset are mapped onto that schema. Real, non-de-identified records are never used. |
 | PRD-A4 | Reviewers (clinician-raters) are available in sufficient number to reach the 3-distinct-rater minimum for at least a sample of results; where they are not, the auto-generated set seeds the queue (PRD-066). |
-| PRD-A5 | The reference deployment is a single host with a modern GPU or an acceptable CPU fallback for embeddings/reranking (documented in README). |
+| PRD-A5 | The reference deployment is a single host with a modern GPU or an acceptable CPU fallback for embeddings/reranking (documented in README). This is load-bearing for the reranker specifically, since it is decided to run locally on this host rather than via the gateway (DEVIATIONS.md #44). |
 | PRD-A6 | Regulatory classification, clinical governance sign-off, and formal clinical validation are **out of engineering scope** and are prerequisites for anything in CDS-FUTURE.md. |
 
 ---

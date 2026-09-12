@@ -38,13 +38,32 @@ class Settings(BaseSettings):
 
     # ── embeddings / reranker (ARCH-004 / ARCH-012 / PRD-103) ──
     embedding_backend: str = "stub"  # local | gateway | stub
-    embedding_model_id: str = "BAAI/bge-large-en-v1.5"  # UNVERIFIED placeholder
+    # Format depends on embedding_backend: a HuggingFace repo id when "local"
+    # (e.g. BAAI/bge-large-en-v1.5); the gateway's own model tag when
+    # "gateway" (e.g. qllama/bge-large-en-v1.5:latest per DEVIATIONS.md #42) —
+    # these are NOT interchangeable strings for the same underlying model.
+    embedding_model_id: str = "BAAI/bge-large-en-v1.5"  # UNVERIFIED placeholder (local-backend format)
     embedding_model_verified: bool = False
     embedding_query_prefix: str = ""
     embedding_doc_prefix: str = ""
+    # Separate from llm_gateway_url: the embedding gateway may be a different
+    # base URL/service than the chat-completion gateway (DEVIATIONS.md #42).
+    # Only consulted once EMBEDDING_BACKEND=gateway is implemented (Phase 2).
+    embedding_gateway_url: str = ""
+    embedding_gateway_api_key: str = ""
     reranker_backend: str = "stub"
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"  # UNVERIFIED placeholder
     reranker_model_verified: bool = False
+    # Local in-process serving knobs (RERANKER_BACKEND=local; DEVIATIONS.md #43).
+    # Recommended implementation: sentence-transformers CrossEncoder (already
+    # in the `local-models` optional extra — no new dependency needed), loaded
+    # once per process behind an lru_cache singleton and called via
+    # asyncio.to_thread (CrossEncoder.predict is a blocking CPU/GPU call and
+    # must not run on the event loop). Not consumed until Phase 2 implements
+    # the `local` branch of app/retrieval/rerank.py.
+    reranker_device: str = "auto"  # auto | cpu | cuda — "auto" = torch.cuda.is_available()
+    reranker_batch_size: int = 16
+    reranker_max_length: int = 512  # truncation length for (query, chunk) pairs
 
     # ── retrieval (ARCH-003 / §7) ──
     candidate_k: int = 40
