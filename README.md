@@ -26,8 +26,8 @@ evaluation workflow.
 | **1** | Agent instructions & scaffolding | ✅ complete (Checkpoint 1 approved 2026-09-12) |
 | **2** | Ingestion & hybrid retrieval core | ✅ complete (Checkpoint 2 approved 2026-09-14) |
 | **3** | Multi-agent orchestration & HITL | ✅ complete (Checkpoint 3 approved 2026-09-14) |
-| 4 | API & backend hardening | 🔄 checklist complete, **Checkpoint 4 pending operator review** |
-| 5 | React frontend | ⬜ not started |
+| **4** | API & backend hardening | ✅ complete (Checkpoint 4 approved 2026-09-14) |
+| **5** | React frontend | ✅ complete (Checkpoint 5 approved 2026-09-14) |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
 data models, database schema (28 tables across 7 Postgres schemas, including
@@ -151,15 +151,83 @@ fixed with real concurrent requests against the live stack afterward — see
 working unmodified (TLS termination, migrate, seed, full ingestion pipeline,
 `POST /query`/`/query/async`, `GET /admin/audit`).
 
-**Phase 4's checklist is now complete.** Still outstanding, not blocking
-Checkpoint 4 but worth carrying forward: wiring `memory.patient_context`
-writes into the live agent graph (implemented and tested since Phase 3, never
-actually called — DEVIATIONS #88); the per-agent tool allow-list
-(`app.agents.registry`) is never invoked by the live graph, only by its own
-tests (DEVIATIONS #90); a durable fix for the `data/` bind-mount permission
-mismatch (currently a manual `chmod`, not a documented setup step or
-automated) (DEVIATIONS #95).
-**465 passing offline tests** as of the last update.
+A Checkpoint 4 self-review then caught one more real regression via
+`make typecheck` (not part of the routine per-change check loop until this
+review): the Celery-async refactor had left `app.eval.harness` importing a
+name that no longer existed — no test caught it because every test of that
+path mocks it. Fixed, plus two smaller type-safety gaps from this session's
+own code — see `DEVIATIONS.md` #96. **Checkpoint 4 was approved 2026-09-14.**
+Still outstanding, not blocking approval but worth carrying forward: wiring
+`memory.patient_context` writes into the live agent graph (implemented and
+tested since Phase 3, never actually called — DEVIATIONS #88); the per-agent
+tool allow-list (`app.agents.registry`) is never invoked by the live graph,
+only by its own tests (DEVIATIONS #90); a durable fix for the `data/`
+bind-mount permission mismatch (currently a manual `chmod`, not a documented
+setup step or automated) (DEVIATIONS #95); a handful of `TRACEABILITY.md`
+rows for Phase 2/3 features found stale during the review (marked
+`not started` despite being implemented) — pre-existing doc debt, not
+Phase 4's own, not yet corrected.
+**472 passing offline tests** as of the last update.
+
+**Phase 5** — React frontend. `GET /hitl/escalations` (list) was added and
+the documented `open -> in_review` "reviewer pulls" transition wired into
+`GET /hitl/escalations/{id}` — a real gap found while starting the
+accept-axis review UI: there was previously no way for a reviewer to
+discover an escalation id at all, only fetch one by an id already in hand.
+See `DEVIATIONS.md` #97.
+
+The frontend itself: a dev-JWT login screen (`POST /auth/dev-login`), a
+wired query interface with citation display and conversation continuity,
+rank mode, and a standalone accept-axis workflow.
+
+For rank mode, each case a ranker reviews (open queue → case detail) is
+exactly two tasks, done together in ONE combined submission: the 11-domain
+rubric AND an accept-axis decision (full accept / partial accept / reject /
+out of scope), per ARCH §13.2 "Both axes together" —
+`eval.rating_round.accept_action_id` links the submitted rating to the
+resulting `hitl.hitl_decision` row. This closes a gap #79/#98 had left open
+(the link existed in the data model since Phase 3 but was never wired up);
+see `DEVIATIONS.md` #99 for the correction and full before/after. Nothing
+further is asked of a ranker: no reason/justification text is collected for
+any accept-axis pick in rank mode, and submitting a rating never creates a
+`hitl.escalation` row (`DEVIATIONS.md` #100). A separate, standalone
+accept-axis workflow also still exists (escalation discovery → resolve a
+single held answer directly, reason code still required there) — genuinely
+distinct from rank mode, since it resolves an urgent `hitl.escalation` a
+reviewer opens, not a multi-rater evaluation pass; ARCH §13.2 names both as
+real, different contexts the accept axis applies to.
+`partial_accept` (in either workflow) may submit a full-text edited answer,
+not span-level edits — the backend flattens segment structure before an
+escalation's candidate answer is ever stored, so a faithful span editor
+isn't buildable against what's actually returned — but that edited-answer
+text is always optional, never required: neither a ranker nor a reviewer
+resolving an escalation has to write anything for `partial_accept`, since
+the accepted-context split alone is a complete, valid `partial_accept`
+(`DEVIATIONS.md` #101). `eslint.config.js` was
+missing entirely (the Phase 1 scaffold predates ESLint 9's flat-config
+requirement); added, and every real finding it surfaced was fixed, not
+suppressed — including, this update, splitting `frontend/src/acceptAxis.ts`
+out of `AcceptAxisControls.tsx` so a `.tsx` file doesn't mix a component
+export with named constant/function exports (`react-refresh/only-export-
+components`). `tsconfig.json` was also missing `noEmit`, so `npm run build`
+had been silently compiling a stray `.js` file next to every source file in
+`src/` — invisible until this phase actually ran a full build for the first
+time; fixed. Verified via a real backend (login, query, rubric domains, a
+combined rank+accept rating submission — including a `reject` with no reason
+code and a `partial_accept` with no edited answer at all — against real
+Postgres, the full escalation lifecycle, 401/403 paths) driven through the
+Vite dev server's own `/api` proxy — the same code path a browser uses —
+plus clean `npm run build`, `npm run lint`, and a real `docker build` of
+`frontend/Dockerfile`. **Not verified: actual browser rendering/interaction**
+— no browser-automation tool was available this session; see
+`DEVIATIONS.md` #98/#99/#100/#101 for the full account of what was and
+wasn't tested. **481 passing offline backend tests** as of the #101
+correction (was 472 before Phase 5's HITL corrections).
+
+**Checkpoint 5 was approved 2026-09-14** — this closes the phased build plan
+(Phases 0–5) from `prompt.txt`. Android remains explicitly out of scope
+unless requested after seeing the web app (prompt.txt's own Phase 5 scope
+note); no further phase is defined beyond this one.
 
 ### Repository layout
 
@@ -190,7 +258,8 @@ backend/
   scripts/          generate_synthetic_records (--domain), prepare_sample_guidelines,
                     ingest_deidentified_records, seed_db
   tests/            offline tests + fixtures/guidelines/ (CI-only synthetic set)
-frontend/           Vite + React + TS shell (QueryPage, ReviewPage, components/)
+frontend/           Vite + React + TS: LoginPage, QueryPage, ReviewPage (rank
+                    mode + accept axis), components/, api/client.ts, auth.ts
 deploy/             nginx.conf, postgres init SQL (schemas + append-only audit grants)
 data/               record_schema.json; sample_guidelines/ (+ manifest);
                     patient_records/{synthetic,deidentified/<dataset>}/
@@ -293,6 +362,9 @@ make prepare-guidelines   # validate the guideline corpus + manifest
 ```
 
 App: `https://localhost/` (self-signed dev cert). API docs: `https://localhost/api/docs`.
+Sign in with a seeded demo user's email, no password (`make seed`):
+`clinician@example.dev`, `reviewer1@example.dev`/`reviewer2@example.dev`/`reviewer3@example.dev`
+(reviewers), `admin@example.dev`.
 
 ### Without Docker
 

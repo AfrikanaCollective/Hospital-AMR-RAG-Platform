@@ -15,7 +15,9 @@ class SpanAction(BaseModel):
 
 class HitlDecisionRequest(BaseModel):
     action: HitlAcceptAction
-    # partial_accept:
+    # partial_accept: both optional (DEVIATIONS.md #101) — a reviewer may
+    # volunteer edited text or per-span actions, but neither is required;
+    # accepted_context_ids alone is a complete, valid partial_accept.
     edited_answer: str | None = None
     span_actions: list[SpanAction] = Field(default_factory=list)
     accepted_context_ids: list[str] = Field(default_factory=list)
@@ -31,8 +33,4 @@ class HitlDecisionRequest(BaseModel):
         )
         if self.action in reason_required and not self.reason_code:
             raise ValueError(f"{self.action} requires reason_code")
-        if self.action == HitlAcceptAction.PARTIAL_ACCEPT and not (
-            self.edited_answer or self.span_actions
-        ):
-            raise ValueError("partial_accept requires edited_answer or span_actions")
         return self

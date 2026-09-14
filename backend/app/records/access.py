@@ -179,14 +179,19 @@ def get_patient_fields(
     field_paths: list[str],
     *,
     purpose: str,
-    actor_role: str,
+    actor_role: str | None,
     actor_id: uuid.UUID | None = None,
     conversation_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Return ONLY the requested, policy-authorized field values (ARCH §10.2,
     ARCH-034). `actor_role` gates every present field through
     `record_field_policy(actor_role, purpose, field_path)`: `deny` drops it,
-    `mask` substitutes a placeholder, `allow` returns the real value. Every
+    `mask` substitutes a placeholder, `allow` returns the real value. `None`
+    (a caller with no resolvable role, e.g. `patient_record_agent`'s
+    `_select_actor_role` when `state["roles"]` is empty) is a legitimate,
+    meaningfully-handled input, not an error: `resolve_field_effects` finds
+    no matching policy rows for it and fails closed to `deny` for every
+    field, same as an unrecognized real role would. Every
     call is audited with the exact field list requested (not what happened to
     exist, or what policy let through) plus the denied/masked subsets — the
     read attempt itself is the sensitive act."""

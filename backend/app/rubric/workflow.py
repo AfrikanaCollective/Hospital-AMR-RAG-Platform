@@ -31,11 +31,13 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db.models.eval import IRRScore, RatingRound, Result, ResultArchive, RubricRating
+from app.hitl.decisions import apply_rating_accept_action
 from app.rubric.irr import per_domain_irr
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from app.schemas.enums import HitlAcceptAction
     from app.schemas.rubric import DomainScore
 
 
@@ -93,9 +95,19 @@ def submit_rating(
     result_id: uuid.UUID,
     rater_id: uuid.UUID,
     scores: list[DomainScore],
+    accept_action: HitlAcceptAction,
     comment: str | None = None,
+    accept_edited_answer: str | None = None,
+    accept_accepted_context_ids: list[str] | None = None,
     is_original_rater: bool = False,
 ) -> RatingRound:
+    """Both HITL axes, one sitting (ARCH §13.2 "Both axes together"):
+    `accept_action` is required on every call — a rater completing the
+    rubric for a case always also records an accept-axis decision for it.
+    That's the whole task (DEVIATIONS.md #100) — no reason code is collected
+    or passed to `apply_rating_accept_action` here, and no escalation is
+    ever created by this path. `RatingRound.accept_action_id` links the
+    resulting `HitlDecision` back to this round."""
     result = _fetch_result(session, result_id)
     if result is None:
         raise ResultNotFoundError(f"no result {result_id}")
@@ -129,6 +141,17 @@ def submit_rating(
                 comment=comment,
             )
         )
+
+    decision = apply_rating_accept_action(
+        session,
+        result_id=result_id,
+        message_id=result.message_id,
+        reviewer_id=rater_id,
+        action=accept_action,
+        edited_answer=accept_edited_answer,
+        accepted_context_ids=accept_accepted_context_ids,
+    )
+    round_row.accept_action_id = decision.id
 
     if result.queue_state == QueueState.NOT_QUEUED:
         result.queue_state = QueueState.OPEN_QUEUE

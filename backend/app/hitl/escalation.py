@@ -10,6 +10,8 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
 from app.audit.log import write_event
 from app.crypto.provider import get_crypto
 from app.db.models.hitl import Escalation
@@ -74,6 +76,22 @@ def get_escalation(session: Session, escalation_id: uuid.UUID) -> Escalation:
     if escalation is None:
         raise EscalationNotFoundError(f"no escalation {escalation_id}")
     return escalation
+
+
+def list_escalations(session: Session, *, state: str | None = None) -> list[Escalation]:
+    """Backs `GET /hitl/escalations` (DEVIATIONS.md #97) — until now there was
+    no way for a reviewer to *discover* an escalation id at all (only
+    `GET /escalations/{id}`, which requires already having one). Default
+    (`state=None`): everything not yet `resolved` (`open` + `in_review`) —
+    "the queue a reviewer would want to pull from," matching how
+    `GET /review-queue` scopes its own default. An explicit `state` filters
+    to exactly that value instead."""
+    stmt = select(Escalation).order_by(Escalation.created_at.asc())
+    if state:
+        stmt = stmt.where(Escalation.state == state)
+    else:
+        stmt = stmt.where(Escalation.state != "resolved")
+    return list(session.execute(stmt).scalars().all())
 
 
 def mark_in_review(escalation: Escalation) -> None:

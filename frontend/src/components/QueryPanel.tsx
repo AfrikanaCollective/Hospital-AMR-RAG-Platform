@@ -1,11 +1,13 @@
 import { useState } from "react";
 
 // Query interface (PRD-107). Optional patient_id + optional local constraint
-// (SCOPE-2.5). Phase 5 wires submission + streaming.
+// (SCOPE-2.5).
 export default function QueryPanel({
   onSubmit,
+  busy,
 }: {
   onSubmit: (q: { question: string; patient_id?: string; hospital_constraint?: string }) => void;
+  busy?: boolean;
 }) {
   const [question, setQuestion] = useState("");
   const [patientId, setPatientId] = useState("");
@@ -42,8 +44,8 @@ export default function QueryPanel({
         retrieved guideline text)
         <input value={constraint} onChange={(e) => setConstraint(e.target.value)} />
       </label>
-      <button type="submit" disabled={!question.trim()}>
-        Submit
+      <button type="submit" disabled={!question.trim() || busy}>
+        {busy ? "Submitting…" : "Submit"}
       </button>
     </form>
   );

@@ -2,8 +2,11 @@
 
 GET  /rubric/domains                          -> the 11 domains + Likert anchors (reference)
 POST /rubric/results/{result_id}/ratings      (reviewer) -> one rating_round: 11 domain scores
-      (1-5) + optional comment + optional linked accept-axis action. Enforces
-      distinct-rater (rating_round UNIQUE (result_id, rater_id)).
+      (1-5) + optional comment + a required accept-axis decision, together in
+      one call (ARCH §13.2 "Both axes together"; DEVIATIONS.md #100 — a
+      ranker's task is exactly these two things, no reason code collected,
+      no escalation ever created). Enforces distinct-rater
+      (rating_round UNIQUE (result_id, rater_id)).
 GET  /rubric/results/{result_id}              -> rating history + IRR (once archived)
 IRR per domain computed at >= IRR_MIN_RATERS distinct raters, then archived.
 """
@@ -43,13 +46,19 @@ async def submit_rating_route(
             result_id=uuid.UUID(result_id),
             rater_id=principal_uuid(principal),
             scores=body.scores,
+            accept_action=body.accept_action,
             comment=body.comment,
+            accept_edited_answer=body.accept_edited_answer,
+            accept_accepted_context_ids=body.accept_accepted_context_ids,
         )
     except ResultNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except DuplicateRaterError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    return {"rating_round_id": str(round_row.id)}
+    return {
+        "rating_round_id": str(round_row.id),
+        "accept_action_id": str(round_row.accept_action_id),
+    }
 
 
 @router.get("/results/{result_id}")

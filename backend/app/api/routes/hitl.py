@@ -1,9 +1,14 @@
 """HITL escalation + accept-axis endpoints (PRD-030, PRD-032, PRD-033; ARCH §12, §13).
 
-GET  /hitl/escalations/{id}
-POST /hitl/escalations/{id}/decision   (reviewer)  -> full_accept | partial_accept | reject
-      Effects on shown answer / conversation memory / patient_context per ARCH §13.2.
-Every decision writes an immutable audit_event and updates escalation + queue state.
+GET  /hitl/escalations                 (reviewer/admin) -> discovery list (DEVIATIONS.md #97)
+GET  /hitl/escalations/{id}                              -> detail; a reviewer opening one
+      transitions it open -> in_review (ARCH §12.2 "reviewer pulls"), not itself audited
+      (app.hitl.escalation.mark_in_review's own docstring: creation + final resolution are
+      the audited transitions).
+POST /hitl/escalations/{id}/decision   (reviewer)  -> full_accept | partial_accept | reject |
+      out_of_scope. Effects on shown answer / conversation memory / patient_context per
+      ARCH §13.2. Every decision writes an immutable audit_event and updates escalation +
+      queue state.
 """
 
 from __future__ import annotations
@@ -17,7 +22,12 @@ from app.api.deps import Principal, get_db, principal_uuid, require_role
 from app.crypto.provider import get_crypto
 from app.db.models.hitl import Escalation
 from app.hitl.decisions import apply_decision
-from app.hitl.escalation import EscalationNotFoundError, get_escalation
+from app.hitl.escalation import (
+    EscalationNotFoundError,
+    get_escalation,
+    list_escalations,
+    mark_in_review,
+)
 from app.schemas.hitl import HitlDecisionRequest
 
 router = APIRouter()
@@ -34,16 +44,36 @@ def _decrypt_candidate_answer(escalation: Escalation) -> str | None:
     ).decode("utf-8")
 
 
+@router.get("/escalations")
+async def list_escalations_route(
+    state: str | None = None,
+    session: Session = Depends(get_db),
+    _principal: Principal = Depends(require_role("reviewer", "admin")),
+) -> list[dict]:
+    return [
+        {
+            "id": str(e.id),
+            "conversation_id": str(e.conversation_id) if e.conversation_id else None,
+            "trigger_code": e.trigger_code,
+            "state": e.state,
+            "created_at": e.created_at.isoformat(),
+        }
+        for e in list_escalations(session, state=state)
+    ]
+
+
 @router.get("/escalations/{escalation_id}")
 async def get_escalation_detail(
     escalation_id: str,
     session: Session = Depends(get_db),
-    _principal: Principal = Depends(require_role("reviewer", "admin")),
+    principal: Principal = Depends(require_role("reviewer", "admin")),
 ) -> dict:
     try:
         escalation = get_escalation(session, uuid.UUID(escalation_id))
     except EscalationNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    if "reviewer" in principal.roles:
+        mark_in_review(escalation)
     return {
         "id": str(escalation.id),
         "conversation_id": str(escalation.conversation_id) if escalation.conversation_id else None,

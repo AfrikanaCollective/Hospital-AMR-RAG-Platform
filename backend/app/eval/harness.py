@@ -48,11 +48,18 @@ def _fetch_fixed_testset(session: Session) -> list[EvalQuestion]:
 
 
 def _invoke_pipeline(question_text: str, patient_id: str | None) -> dict:
-    # Deferred: app.api.routes.query imports app.agents.graph, which imports
-    # every agent module — a real, if not circular, cost worth avoiding at
-    # harness-module import time (most callers of app.eval.harness never
-    # invoke the real pipeline; tests always monkeypatch this function).
-    from app.api.routes.query import _invoke_graph  # noqa: PLC0415
+    # Deferred: app.agents.graph_runtime.invoke_graph itself lazily imports
+    # app.agents.graph, which imports every agent module — a real cost worth
+    # avoiding at harness-module import time (most callers of
+    # app.eval.harness never invoke the real pipeline; tests always
+    # monkeypatch this function). Previously imported `_invoke_graph` from
+    # app.api.routes.query; that name moved to
+    # app.agents.graph_runtime.invoke_graph when the sync route and the
+    # async Celery task (app.agents.tasks.run_query) were made to share the
+    # same graph-invocation code (DEVIATIONS.md #94) — this import was
+    # missed at the time (caught by `make typecheck`, not by the test suite,
+    # since nothing here calls the real, unmocked pipeline).
+    from app.agents.graph_runtime import invoke_graph  # noqa: PLC0415
 
     conversation_id = str(uuid.uuid4())
     initial_state = {
@@ -64,7 +71,7 @@ def _invoke_pipeline(question_text: str, patient_id: str | None) -> dict:
         "query": question_text,
         "hospital_constraint": None,
     }
-    return _invoke_graph(initial_state, conversation_id)
+    return invoke_graph(initial_state, conversation_id)
 
 
 _FETCH_FIXED_TESTSET_FN = _fetch_fixed_testset

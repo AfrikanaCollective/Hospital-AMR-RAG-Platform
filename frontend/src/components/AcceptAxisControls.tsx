@@ -1,64 +1,57 @@
-import { useState } from "react";
-import type { AcceptAction } from "../types";
+import type { AcceptAxisValue } from "../types";
+import { ACCEPT_ACTIONS, ACCEPT_REASON_REQUIRED } from "../acceptAxis";
 
-// Accept axis (PRD-032): full accept / partial accept / reject. Independent of
-// rank mode. Effects on state are defined server-side (ARCH §13.2):
-//  - full_accept : answer released as-is; provisional context -> reviewer_accepted
-//  - partial_accept: reviewer-edited version canonical; only retained context kept
-//  - reject      : answer withheld/retracted; ALL provisional context rolled back
+// Accept axis (PRD-032, ARCH §13.2): full accept / partial accept / reject /
+// out of scope. A pure controlled fieldset — no form/submit of its own — so
+// it can be composed into either of its two real call sites: RubricForm
+// (combined rank+accept submission — a ranker's task is exactly the rubric
+// plus this pick, no reason text, `requireReason={false}`, DEVIATIONS #100)
+// and ReviewPage's EscalationDecisionForm (standalone escalation
+// resolution, where a reason is still required — the default). The edited-
+// answer textarea is always optional in both, never required for
+// `partial_accept` (DEVIATIONS #101). See ../acceptAxis.ts for the shared
+// constants/helpers and the full rationale.
 export default function AcceptAxisControls({
-  onSubmit,
+  value,
+  onChange,
+  requireReason = true,
 }: {
-  onSubmit: (a: {
-    action: AcceptAction;
-    edited_answer?: string;
-    reason_code?: string;
-  }) => void;
+  value: AcceptAxisValue;
+  onChange: (next: AcceptAxisValue) => void;
+  requireReason?: boolean;
 }) {
-  const [action, setAction] = useState<AcceptAction>("full_accept");
-  const [edited, setEdited] = useState("");
-  const [reason, setReason] = useState("");
-
-  const needsReason = action === "reject" || action === "partial_accept";
+  const needsReason = requireReason && ACCEPT_REASON_REQUIRED.includes(value.action);
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSubmit({
-          action,
-          edited_answer: action === "partial_accept" ? edited : undefined,
-          reason_code: needsReason ? reason : undefined,
-        });
-      }}
-      style={{ display: "grid", gap: 6 }}
-    >
+    <div style={{ display: "grid", gap: 6 }}>
       <div>
-        {(["full_accept", "partial_accept", "reject"] as AcceptAction[]).map((a) => (
+        {ACCEPT_ACTIONS.map((a) => (
           <label key={a} style={{ marginRight: 12 }}>
-            <input type="radio" name="accept" checked={action === a} onChange={() => setAction(a)} />{" "}
-            {a.replace("_", " ")}
+            <input
+              type="radio"
+              name="accept"
+              checked={value.action === a}
+              onChange={() => onChange({ ...value, action: a })}
+            />{" "}
+            {a.replace(/_/g, " ")}
           </label>
         ))}
       </div>
-      {action === "partial_accept" && (
+      {value.action === "partial_accept" && (
         <textarea
-          placeholder="Edited answer (keep supported segments, remove/rewrite the rest)"
-          value={edited}
-          onChange={(e) => setEdited(e.target.value)}
-          rows={4}
+          placeholder="Edited answer (optional — keep supported content, remove/rewrite the rest)"
+          value={value.editedAnswer}
+          onChange={(e) => onChange({ ...value, editedAnswer: e.target.value })}
+          rows={6}
         />
       )}
       {needsReason && (
         <input
           placeholder="Reason code (required)"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
+          value={value.reasonCode}
+          onChange={(e) => onChange({ ...value, reasonCode: e.target.value })}
         />
       )}
-      <button type="submit" disabled={needsReason && !reason.trim()}>
-        Submit decision
-      </button>
-    </form>
+    </div>
   );
 }

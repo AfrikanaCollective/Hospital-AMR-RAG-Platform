@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import app.audit.log as audit_log
-from app.hitl.escalation import create_escalation, mark_in_review
+from app.db.models.hitl import Escalation
+from app.hitl.escalation import create_escalation, list_escalations, mark_in_review
 
 
 class _FakeSession:
@@ -19,6 +21,31 @@ class _FakeSession:
         for obj in self.added:
             if getattr(obj, "id", None) is None:
                 obj.id = uuid.uuid4()
+
+
+class _FakeQuerySession:
+    """`list_escalations` builds a real `select(...)` and calls `.execute()`
+    directly. This fake ignores the compiled WHERE clause (matching this
+    suite's established pattern, e.g. `app.ingestion.corpus_access`'s tests)
+    and returns canned rows — the filter itself is a single, standard
+    SQLAlchemy `.where()` equality/inequality, the same idiom already used
+    (and not separately real-Postgres-verified) elsewhere in this module."""
+
+    def __init__(self, rows: list[Escalation]) -> None:
+        self._rows = rows
+
+    def execute(self, stmt: object) -> object:
+        class _Res:
+            def __init__(self, rows: list[Escalation]) -> None:
+                self._rows = rows
+
+            def scalars(self) -> _Res:
+                return self
+
+            def all(self) -> list[Escalation]:
+                return self._rows
+
+        return _Res(self._rows)
 
 
 def test_create_escalation_persists_and_audits(monkeypatch) -> None:  # noqa: ANN001
@@ -52,3 +79,23 @@ def test_mark_in_review_is_noop_once_resolved() -> None:
     escalation = Escalation(id=uuid.uuid4(), trigger_code="low_confidence", state="resolved")
     mark_in_review(escalation)
     assert escalation.state == "resolved"
+
+
+def test_list_escalations_returns_rows() -> None:
+    rows = [
+        Escalation(
+            id=uuid.uuid4(),
+            trigger_code="low_confidence",
+            state="open",
+            created_at=datetime.now(UTC),
+        )
+    ]
+    result = list_escalations(_FakeQuerySession(rows))
+    assert result == rows
+
+
+def test_list_escalations_accepts_explicit_state_filter() -> None:
+    """Just confirms the call doesn't crash when a filter is given — the
+    fake doesn't evaluate the WHERE clause, see `_FakeQuerySession`."""
+    result = list_escalations(_FakeQuerySession([]), state="resolved")
+    assert result == []

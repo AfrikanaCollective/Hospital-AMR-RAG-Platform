@@ -56,25 +56,28 @@ def field_allowed(effect: str) -> bool:
 
 
 def resolve_field_effects(
-    session: Session, role: str, purpose: str, field_paths: Iterable[str]
+    session: Session, role: str | None, purpose: str, field_paths: Iterable[str]
 ) -> dict[str, str]:
     """Bulk `(role, purpose, field_path) -> allow|deny|mask` for every path in
-    `field_paths`, in one query against `records.record_field_policy`."""
+    `field_paths`, in one query against `records.record_field_policy`.
+    `role=None` (no resolvable caller role) is a legitimate input: no policy
+    row has a `NULL` role (the column is non-nullable), so the query matches
+    nothing and every path falls through to the fail-closed default."""
     paths = list(field_paths)
     if not paths:
         return {}
-    rows = dict(
+    rows: dict[str, str] = dict(
         session.execute(
             select(RecordFieldPolicy.field_path, RecordFieldPolicy.effect).where(
                 RecordFieldPolicy.role == role,
                 RecordFieldPolicy.purpose == purpose,
             )
-        ).all()
+        ).all()  # type: ignore[arg-type]
     )
     wildcard_effect = rows.get(WILDCARD_FIELD_PATH, _DEFAULT_EFFECT)
     return {path: rows.get(path, wildcard_effect) for path in paths}
 
 
-def resolve_field_effect(session: Session, role: str, purpose: str, field_path: str) -> str:
+def resolve_field_effect(session: Session, role: str | None, purpose: str, field_path: str) -> str:
     """Single-field convenience wrapper around `resolve_field_effects`."""
     return resolve_field_effects(session, role, purpose, [field_path])[field_path]

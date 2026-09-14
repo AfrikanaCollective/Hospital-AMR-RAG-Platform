@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_role
 from app.audit.log import query_events, verify_chain
 from app.config import get_settings
+from app.db.models.audit import AuditEvent
 
 router = APIRouter(dependencies=[Depends(require_role("admin"))])
 
@@ -44,7 +45,7 @@ async def get_config_summary() -> dict[str, object]:
     }
 
 
-def _serialize_event(e) -> dict:  # noqa: ANN001
+def _serialize_event(e: AuditEvent) -> dict:
     # Deliberately excludes query_text_enc/response_text_enc: raw ciphertext,
     # not JSON-serializable and not useful without a decrypt step this
     # listing endpoint has no reason to perform.
