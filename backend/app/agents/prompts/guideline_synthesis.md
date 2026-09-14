@@ -46,5 +46,9 @@ PATIENT FEATURE SUMMARY (de-identified; may be empty):
 STAGE / MISSING-INFO CONTEXT (may be empty):
 {{scope2_context}}
 
+HOSPITAL CONSTRAINT (may be empty; see rule 6 — only surface an alternative
+already written in a source passage):
+{{hospital_constraint}}
+
 SOURCES:
 {{sources}}

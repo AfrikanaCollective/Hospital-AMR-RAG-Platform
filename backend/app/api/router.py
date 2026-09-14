@@ -6,9 +6,9 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     admin,
+    auth,
     conversations,
     corpus,
-    eval as eval_routes,
     health,
     hitl,
     ingest,
@@ -17,9 +17,13 @@ from app.api.routes import (
     review_queue,
     rubric,
 )
+from app.api.routes import (
+    eval as eval_routes,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(query.router, prefix="/query", tags=["query"])
 api_router.include_router(conversations.router, prefix="/conversations", tags=["conversations"])
 api_router.include_router(ingest.router, prefix="/ingest", tags=["ingest"])

@@ -28,6 +28,4 @@ RELEASE_POLICY: dict[str, str] = {
 }
 
 # Triggers that must NEVER yield an answer, ever (SCOPE boundary + capability stub).
-NEVER_ANSWERED: frozenset[str] = frozenset(
-    {T.SCOPE_BOUNDARY, T.CAPABILITY_NOT_ENABLED}
-)
+NEVER_ANSWERED: frozenset[str] = frozenset({T.SCOPE_BOUNDARY, T.CAPABILITY_NOT_ENABLED})

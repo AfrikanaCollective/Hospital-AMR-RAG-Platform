@@ -6,7 +6,7 @@ Full detail and rationale: [ARCHITECTURE.md](ARCHITECTURE.md). Requirements:
 Judgment calls: [DEVIATIONS.md](DEVIATIONS.md).
 
 **Keep this file in sync whenever ARCHITECTURE.md changes.**
-**Status:** Phase 0 (Checkpoint 0 pending). Last updated 2026-08-27.
+**Status:** Phase 3 checklist complete, Checkpoint 3 pending. Last updated 2026-09-14.
 
 ---
 
@@ -241,6 +241,11 @@ the open queue until ≥3 distinct raters, then IRR per domain → archive.
 | **full_accept** | released as-is, `validated` | assistant turn committed `accepted` | provisional → `reviewer_accepted` | `resolution=accepted` |
 | **partial_accept** | reviewer-edited version canonical; original + diff kept | edited turn committed, linked to original; removed spans logged as failures | only retained entries → `reviewer_edited`; rest expired | `resolution=partial`, `reason_code` required |
 | **reject** | not released / retracted; safe fallback shown | `rejected` turn (question kept, body = rejection notice) | **all** provisional entries rolled back | `resolution=rejected`, `reason_code`; flagged as eval failure |
+| **out_of_scope** | not released / retracted; out-of-scope notice shown | `out_of_scope` turn (question kept, body = out-of-scope notice) | **all** provisional entries rolled back (same mechanics as reject) | `resolution=out_of_scope`, `reason_code`; flagged as a **routing** failure, not a grounding one |
+
+`out_of_scope` (DEVIATIONS #84) judges the *request* — this should never have
+reached synthesis/escalation — distinct from `reject`, which judges an
+*attempted answer*.
 
 Every HITL action → immutable `audit_event`.
 

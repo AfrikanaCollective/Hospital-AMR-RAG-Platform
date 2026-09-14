@@ -292,7 +292,7 @@ Hot state (active window, streaming partials) lives in Redis keyed by
 | trigger_detail | jsonb | scores, conflicting chunk ids, missing fields, etc. |
 | candidate_answer_enc | bytea `enc` | held answer (if not released) |
 | state | text | `open` \| `in_review` \| `resolved` |
-| resolution | text, null | `accepted` \| `partial` \| `rejected` |
+| resolution | text, null | `accepted` \| `partial` \| `rejected` \| `out_of_scope` |
 | resolved_by | uuid, null | |
 | resolved_at | timestamptz, null | |
 
@@ -303,11 +303,11 @@ Hot state (active window, streaming partials) lives in Redis keyed by
 | escalation_id | uuid FK, null | null if decision made outside an escalation (sampling) |
 | message_id | uuid FK | |
 | reviewer_id | uuid FK | |
-| action | text | `full_accept` \| `partial_accept` \| `reject` |
+| action | text | `full_accept` \| `partial_accept` \| `reject` \| `out_of_scope` |
 | edited_answer_enc | bytea `enc`, null | for partial_accept |
 | span_actions | jsonb, null | `[{span, kept|removed|edited, ...}]` for partial_accept |
 | accepted_context_ids | jsonb, null | which provisional `patient_context` rows the reviewer kept |
-| reason_code | text, null | required for reject/partial |
+| reason_code | text, null | required for reject/partial/out_of_scope |
 | created_at | timestamptz | |
 
 ### 4.5 `eval` schema (rubric + questions + harness)
@@ -997,11 +997,20 @@ There are **two independent axes**, captured together in one review sitting
 (a `rating_round`):
 
 1. **Rank mode** — the 11-domain rubric (§14).
-2. **Accept axis** — one of **full accept**, **partial accept**, **reject**.
+2. **Accept axis** — one of **full accept**, **partial accept**, **reject**,
+   **out of scope**.
 
 (The brief lists "multi-dimensional output ranking, full accept, partial
-accept, and reject"; we model ranking as one axis and the three accept actions
-as the second. Interpretation logged in DEVIATIONS.md #11.)
+accept, and reject"; we model ranking as one axis and the accept actions as
+the second. Interpretation logged in DEVIATIONS.md #11. **Out of scope**
+was added to the accept axis as a fourth action (DEVIATIONS.md #84): it is a
+reviewer judgment about the *request* — this question should never have
+reached synthesis/escalation at all (e.g. it is actually SCOPE-2.3/2.4-shaped
+and the deterministic classifier missed it, or it is non-clinical) — distinct
+from **reject**, which judges an *attempted answer* as wrong, ungrounded, or
+unsafe. Separating the two keeps "the system answered badly" and "the system
+was asked the wrong kind of question" as distinguishable signals in any
+conformity-evidence report built from `hitl_decision`/`escalation` rows.)
 
 ### 13.1 Rank mode
 
@@ -1024,6 +1033,7 @@ under `review_sampling`, or a live turn a reviewer opens).
 | **Full accept** | Released as-is (if held); marked `validated`. | The assistant turn is committed as `accepted`; citations retained. | Provisional entries for this result flipped to `reviewer_accepted`. | `escalation.resolution = accepted`, `state = resolved`; `result.observed_outcome` confirmed. | `hitl_decision(action=full_accept)`. |
 | **Partial accept** | The **reviewer-edited** answer becomes canonical; original retained and diff stored (`span_actions`, `edited_answer_enc`). | Edited version committed as the `accepted` turn, linked to the original; removed/rewritten spans logged to `eval` as grounding/quality failures. | Only reviewer-retained entries (`accepted_context_ids`) flipped to `reviewer_edited`; the rest are expired (`valid_to = now`). | `resolution = partial`; `reason_code` required; feeds eval failure analysis. | `hitl_decision(action=partial_accept, span_actions, reason_code)`. |
 | **Reject** | Not released / retracted if it was shown. Clinician sees "sent for review; no system answer" or a safe templated fallback. | A `rejected` turn is recorded: the question is kept, the answer body replaced with the rejection notice + `reason_code`. | **All** provisional entries for this result rolled back (`valid_to = now`, marked `rejected`); no `patient_context` write survives. | `resolution = rejected`; `reason_code` required; result flagged as a failure for the eval harness; may trigger re-retrieval or a templated safe response. | `hitl_decision(action=reject, reason_code)`. |
+| **Out of scope** | Not released / retracted if it was shown. Clinician sees an out-of-scope notice, not a rejection notice. | An `out_of_scope` turn is recorded: the question is kept, the answer body replaced with the out-of-scope notice + `reason_code`. | **All** provisional entries for this result rolled back (`valid_to = now`); no `patient_context` write survives — same mechanics as reject, since nothing about a mis-scoped request should persist as context. | `resolution = out_of_scope`; `reason_code` required; flagged as a **routing** failure for the eval harness (distinct from a grounding failure) — a signal the deterministic scope classifier (§10, ARCH-025) may need review, not that synthesis/grounding misbehaved. | `hitl_decision(action=out_of_scope, reason_code)`. |
 
 **Both axes together.** A reviewer typically ranks *and* takes an accept-axis
 action in the same `rating_round`; `rating_round.accept_action_id` links them.

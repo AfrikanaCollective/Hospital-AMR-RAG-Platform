@@ -40,7 +40,7 @@ in §6 and ARCHITECTURE.md. See non-goals (§7) and [CDS-FUTURE.md](CDS-FUTURE.m
 | Persona | Description | Primary needs |
 |---|---|---|
 | **Clinician (query user)** | Doctor/nurse/pharmacist asking guideline questions, optionally in the context of one synthetic patient record. | Fast, grounded answers; visible citations; clear "no guideline found" when applicable; ability to escalate. |
-| **Reviewer (clinician-rater)** | Clinician performing structured evaluation of system outputs via the rubric and the accept/partial/reject axis. | Efficient review queue; unambiguous rubric; sees provenance and expected-outcome labels; independent rating. |
+| **Reviewer (clinician-rater)** | Clinician performing structured evaluation of system outputs via the rubric and the accept/partial/reject/out-of-scope axis. | Efficient review queue; unambiguous rubric; sees provenance and expected-outcome labels; independent rating. |
 | **Admin** | Operates the deployment: ingestion, corpus/version management, user/role management, config. | Ingestion tooling; audit visibility; RBAC management; safe config of models/thresholds. |
 | **(Implicit) Compliance/quality lead** | Consumes audit logs and rubric/IRR reports. | Immutable audit trail; separable auto-generated vs clinician-submitted evidence. |
 
@@ -109,7 +109,7 @@ IDs are permanent. New requirements append; existing IDs are never renumbered.
 |---|---|
 | PRD-030 | The system supports **HITL escalation** with the concrete triggers enumerated in ARCHITECTURE.md (low confidence, grounding failure, conflicting sources, explicit user request, PHI ambiguity, CDS-boundary queries, hospital-constraint-without-documented-alternative, and others). |
 | PRD-031 | HITL supports **rank mode**: a structured multi-domain rubric evaluation (see 4.5). |
-| PRD-032 | HITL supports an **accept axis** with three actions — **full accept**, **partial accept**, **reject** — each with a defined effect on the answer shown, conversation memory, and per-patient context (defined in ARCHITECTURE.md §"HITL modes"). Rank mode and the accept axis are independent and both are captured. |
+| PRD-032 | HITL supports an **accept axis** with four actions — **full accept**, **partial accept**, **reject**, **out of scope** — each with a defined effect on the answer shown, conversation memory, and per-patient context (defined in ARCHITECTURE.md §"HITL modes"). `reject` judges an attempted answer as wrong/ungrounded/unsafe; `out of scope` judges the request itself as one the system should never have attempted to answer (DEVIATIONS.md #84). Rank mode and the accept axis are independent and both are captured. |
 | PRD-033 | Every HITL action writes an immutable audit record and updates escalation/queue state. |
 
 ### 4.5 Structured multi-rater evaluation (regulatory-evidence oriented)

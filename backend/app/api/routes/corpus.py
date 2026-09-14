@@ -3,7 +3,8 @@
 GET  /corpus/documents
 GET  /corpus/documents/{id}/versions
 POST /corpus/versions/{id}/withdraw   (admin)  -> status=withdrawn; old citations still resolve
-GET  /corpus/chunks/{chunk_id}                 -> chunk text + offsets (citation re-verification, PRD-016)
+GET  /corpus/chunks/{chunk_id}                 -> chunk text + offsets (citation re-verification,
+                                                   PRD-016)
 """
 
 from __future__ import annotations

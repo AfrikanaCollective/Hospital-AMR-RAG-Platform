@@ -10,10 +10,17 @@ IRR per domain computed at >= IRR_MIN_RATERS distinct raters, then archived.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
 
-from app.api.deps import require_role
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import Principal, get_db, principal_uuid, require_role
+from app.db.models.eval import IRRScore, RatingRound, Result, RubricRating
 from app.rubric.domains import RUBRIC_DOMAINS
+from app.rubric.workflow import DuplicateRaterError, ResultNotFoundError, submit_rating
+from app.schemas.rubric import RatingRoundRequest
 
 router = APIRouter()
 
@@ -23,13 +30,72 @@ async def list_domains() -> list[dict[str, object]]:
     return [d.as_reference() for d in RUBRIC_DOMAINS]
 
 
-@router.post("/results/{result_id}/ratings", status_code=status.HTTP_501_NOT_IMPLEMENTED,
-             dependencies=[Depends(require_role("reviewer"))])
-async def submit_rating(result_id: str) -> None:
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Phase 3: rubric workflow (ARCH §14.2).")
+@router.post("/results/{result_id}/ratings")
+async def submit_rating_route(
+    result_id: str,
+    body: RatingRoundRequest,
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(require_role("reviewer")),
+) -> dict:
+    try:
+        round_row = submit_rating(
+            session,
+            result_id=uuid.UUID(result_id),
+            rater_id=principal_uuid(principal),
+            scores=body.scores,
+            comment=body.comment,
+        )
+    except ResultNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except DuplicateRaterError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return {"rating_round_id": str(round_row.id)}
 
 
-@router.get("/results/{result_id}", status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            dependencies=[Depends(require_role("reviewer", "admin"))])
-async def get_result_ratings(result_id: str) -> None:
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "Phase 3: rubric workflow (ARCH §14.5).")
+@router.get("/results/{result_id}")
+async def get_result_ratings(
+    result_id: str,
+    session: Session = Depends(get_db),
+    _principal: Principal = Depends(require_role("reviewer", "admin")),
+) -> dict:
+    rid = uuid.UUID(result_id)
+    result = session.get(Result, rid)
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no result {result_id}")
+
+    rounds_stmt = select(RatingRound).where(RatingRound.result_id == rid)
+    rounds = list(session.execute(rounds_stmt).scalars().all())
+    irr_stmt = select(IRRScore).where(IRRScore.result_id == rid)
+    irr_rows = list(session.execute(irr_stmt).scalars().all())
+    ratings_stmt = select(RubricRating).where(RubricRating.result_id == rid)
+    ratings = list(session.execute(ratings_stmt).scalars().all())
+
+    return {
+        "result_id": result_id,
+        "provenance": result.provenance,
+        "expected_outcome": result.expected_outcome,
+        "distinct_rater_count": len({r.rater_id for r in rounds}),
+        "archived": result.queue_state == "archived",
+        "rounds": [
+            {
+                "rater_id": str(r.rater_id),
+                "submitted_at": r.submitted_at.isoformat(),
+                "scores": {
+                    rating.domain_code: rating.score
+                    for rating in ratings
+                    if rating.rater_id == r.rater_id
+                },
+            }
+            for r in rounds
+        ],
+        "irr": [
+            {
+                "domain_code": row.domain_code,
+                "metric": row.metric,
+                "value": row.value,
+                "n_raters": row.n_raters,
+                "n_items": row.n_items,
+            }
+            for row in irr_rows
+        ],
+    }

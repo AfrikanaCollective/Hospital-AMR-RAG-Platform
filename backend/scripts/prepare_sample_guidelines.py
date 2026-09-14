@@ -29,12 +29,16 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pypdf import PdfReader
+
 REQUIRED_MANIFEST_FIELDS = ("title", "publisher", "version_label", "effective_date", "licence")
 PLACEHOLDER_TOKENS = ("TODO_CONFIRM", "TODO", "<set-me>", "")
+_NAME_COLUMN_WIDTH = 62  # printed table's "file" column width
 
 # CI-only synthetic fixtures — NOT clinical guidance, NOT the real corpus.
 _SYNTHETIC_FIXTURES: dict[str, str] = {
-    "SYNTH-GL-001_acute_breathlessness.md": """# SYNTHETIC GUIDELINE 001 — Assessment of Acute Breathlessness in Adults
+    "SYNTH-GL-001_acute_breathlessness.md": """\
+# SYNTHETIC GUIDELINE 001 — Assessment of Acute Breathlessness in Adults
 *THIS IS A SYNTHETIC DOCUMENT FOR SOFTWARE DEVELOPMENT. NOT CLINICAL GUIDANCE.*
 Version 2025.1 — effective 2025-01-01
 format_profile: grade_recommendations
@@ -58,7 +62,8 @@ saturations within a documented target range. (Strong recommendation, moderate c
 | Stabilisation | Observations complete; oxygen target set; senior review requested |
 | Ongoing management | Stabilised for >= 4 hours; disposition decision documented |
 """,
-    "SYNTH-GL-002_hospital_acquired_infection.md": """# SYNTHETIC GUIDELINE 002 — Suspected Hospital-Acquired Infection
+    "SYNTH-GL-002_hospital_acquired_infection.md": """\
+# SYNTHETIC GUIDELINE 002 — Suspected Hospital-Acquired Infection
 *THIS IS A SYNTHETIC DOCUMENT FOR SOFTWARE DEVELOPMENT. NOT CLINICAL GUIDANCE.*
 Version 2024.2 — effective 2024-06-01
 format_profile: grade_recommendations
@@ -77,7 +82,8 @@ second-line agent for each syndrome in Appendix A.
 requires: suspected source, time of onset relative to admission, and current
 renal function.
 """,
-    "SYNTH-GL-003_narrow_topic_electrolytes.md": """# SYNTHETIC GUIDELINE 003 — Replacement of Low Potassium in Adult Inpatients
+    "SYNTH-GL-003_narrow_topic_electrolytes.md": """\
+# SYNTHETIC GUIDELINE 003 — Replacement of Low Potassium in Adult Inpatients
 *THIS IS A SYNTHETIC DOCUMENT FOR SOFTWARE DEVELOPMENT. NOT CLINICAL GUIDANCE.*
 Version 2025.1 — effective 2025-03-01
 format_profile: grade_recommendations
@@ -100,17 +106,13 @@ def _is_guideline_file(p: Path) -> bool:
         return False
     if p.name.startswith("SYNTH-GL-"):
         return False
-    if p.name in ("SOURCES.md",):
-        return False
-    return True
+    return p.name not in ("SOURCES.md",)
 
 
 def _page_count(pdf: Path) -> int | str:
     try:
-        from pypdf import PdfReader
-
         return len(PdfReader(str(pdf)).pages)
-    except Exception:
+    except Exception:  # a corrupt/unreadable PDF degrades to "?", never crashes the tool
         return "?"
 
 
@@ -137,11 +139,14 @@ def use_real_corpus(dir_: Path, strict: bool) -> int:
     manifest = _load_manifest(dir_)
     print(f"[prepare-guidelines] {len(docs)} guideline document(s) in {dir_}")
     if not (dir_ / "manifest.json").exists():
-        print(f"[prepare-guidelines] NOTE: no manifest.json — copy "
-              f"{dir_ / 'manifest.example.json'} to manifest.json and fill it (ARCH-038).")
+        print(
+            f"[prepare-guidelines] NOTE: no manifest.json — copy "
+            f"{dir_ / 'manifest.example.json'} to manifest.json and fill it (ARCH-038)."
+        )
     any_incomplete = False
-    print(f"\n  {'file':<62} {'pages':>6}  {'profile':<20} {'metadata'}")
-    print(f"  {'-' * 62} {'-' * 6}  {'-' * 20} {'-' * 8}")
+    name_w = _NAME_COLUMN_WIDTH
+    print(f"\n  {'file':<{name_w}} {'pages':>6}  {'profile':<20} {'metadata'}")
+    print(f"  {'-' * name_w} {'-' * 6}  {'-' * 20} {'-' * 8}")
     for p in docs:
         entry = manifest.get(p.name)
         missing = _entry_incomplete(entry)
@@ -150,13 +155,15 @@ def use_real_corpus(dir_: Path, strict: bool) -> int:
         status = "OK" if not missing else f"MISSING: {', '.join(missing)}"
         if missing:
             any_incomplete = True
-        name = p.name if len(p.name) <= 62 else p.name[:59] + "..."
-        print(f"  {name:<62} {str(pages):>6}  {profile:<20} {status}")
+        name = p.name if len(p.name) <= name_w else p.name[: name_w - 3] + "..."
+        print(f"  {name:<{name_w}} {str(pages):>6}  {profile:<20} {status}")
 
     if any_incomplete:
-        print("\n[prepare-guidelines] WARNING: one or more documents have incomplete "
-              "manifest metadata. Fill the fields above in manifest.json — this "
-              "script will not invent them (ARCH-038).")
+        print(
+            "\n[prepare-guidelines] WARNING: one or more documents have incomplete "
+            "manifest metadata. Fill the fields above in manifest.json — this "
+            "script will not invent them (ARCH-038)."
+        )
         return 1 if strict else 0
     print("\n[prepare-guidelines] all documents have complete metadata.")
     return 0
@@ -175,26 +182,38 @@ def write_synthetic_fixtures() -> int:
         "(see DEVIATIONS.md #26). Use these only for deterministic offline tests.\n",
         encoding="utf-8",
     )
-    print(f"[prepare-guidelines] wrote {len(_SYNTHETIC_FIXTURES)} CI-only synthetic "
-          f"fixtures to {FIXTURES_DIR}")
-    print("[prepare-guidelines] these are NOT the dev corpus — add real guideline "
-          "PDFs to data/sample_guidelines/ for real work.")
+    print(
+        f"[prepare-guidelines] wrote {len(_SYNTHETIC_FIXTURES)} CI-only synthetic "
+        f"fixtures to {FIXTURES_DIR}"
+    )
+    print(
+        "[prepare-guidelines] these are NOT the dev corpus — add real guideline "
+        "PDFs to data/sample_guidelines/ for real work."
+    )
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--dir", type=Path,
-                   default=Path(os.environ.get("SAMPLE_GUIDELINES_DIR", "data/sample_guidelines")))
-    p.add_argument("--strict", action="store_true",
-                   help="exit non-zero if any document's manifest metadata is incomplete")
-    p.add_argument("--allow-synthetic", action="store_true",
-                   help="when no real docs are present, write the CI-only synthetic fixture set")
+    p.add_argument(
+        "--dir",
+        type=Path,
+        default=Path(os.environ.get("SAMPLE_GUIDELINES_DIR", "data/sample_guidelines")),
+    )
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit non-zero if any document's manifest metadata is incomplete",
+    )
+    p.add_argument(
+        "--allow-synthetic",
+        action="store_true",
+        help="when no real docs are present, write the CI-only synthetic fixture set",
+    )
     args = p.parse_args(argv)
 
-    allow_synth = args.allow_synthetic or os.environ.get("GUIDELINES_ALLOW_SYNTHETIC", "").lower() in (
-        "1", "true", "yes",
-    )
+    env_flag = os.environ.get("GUIDELINES_ALLOW_SYNTHETIC", "").lower()
+    allow_synth = args.allow_synthetic or env_flag in ("1", "true", "yes")
 
     args.dir.mkdir(parents=True, exist_ok=True)
     real_docs = [x for x in args.dir.iterdir() if _is_guideline_file(x)]
@@ -204,11 +223,14 @@ def main(argv: list[str] | None = None) -> int:
     if allow_synth:
         return write_synthetic_fixtures()
 
-    print(f"[prepare-guidelines] No guideline documents found in {args.dir}.\n"
-          "  Add real guideline PDFs there and give each a manifest.json entry "
-          "(copy manifest.example.json), then re-run.\n"
-          "  Or pass --allow-synthetic (GUIDELINES_ALLOW_SYNTHETIC=true) to write "
-          "the CI-only offline fixture set instead.", file=sys.stderr)
+    print(
+        f"[prepare-guidelines] No guideline documents found in {args.dir}.\n"
+        "  Add real guideline PDFs there and give each a manifest.json entry "
+        "(copy manifest.example.json), then re-run.\n"
+        "  Or pass --allow-synthetic (GUIDELINES_ALLOW_SYNTHETIC=true) to write "
+        "the CI-only offline fixture set instead.",
+        file=sys.stderr,
+    )
     return 2
 
 

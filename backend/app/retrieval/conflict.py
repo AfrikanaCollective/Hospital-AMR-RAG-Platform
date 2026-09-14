@@ -6,12 +6,78 @@ NLI/contradiction pass between top recommendation chunks. Any flag =>
 escalation (conflicting_sources); both sides are surfaced with citations, never
 auto-resolved. Starts conservative (over-flag), tuned on the eval set
 (self-critique §21a).
+
+(b) is a lexical heuristic, not a real NLI model call (DEVIATIONS.md #53): two
+`recommendation` chunks that share enough vocabulary to be "about the same
+topic" but disagree on negation ("recommended" vs "not recommended") are
+flagged. This intentionally over-flags rather than under-flags — a missed
+contradiction is a safety defect, a false positive just costs a review.
 """
 
 from __future__ import annotations
 
+import difflib
+import re
+from itertools import combinations
+
 from app.agents.state import RetrievalItem
+from app.retrieval.sparse import analyze
+
+_NEGATION_RE = re.compile(
+    r"\b(not|no longer|avoid|contraindicated|should not|must not|is not|are not|discontinued)\b",
+    re.IGNORECASE,
+)
+_MATERIAL_DIFFERENCE_MAX_RATIO = 0.85  # below this similarity ratio => "different text"
+_MIN_SHARED_TOKENS_FOR_SAME_TOPIC = 3
+
+
+def _materially_different(a: str, b: str) -> bool:
+    ratio = difflib.SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
+    return ratio < _MATERIAL_DIFFERENCE_MAX_RATIO
+
+
+def _lexically_contradicts(a: str, b: str) -> bool:
+    shared = set(analyze(a)) & set(analyze(b))
+    if len(shared) < _MIN_SHARED_TOKENS_FOR_SAME_TOPIC:
+        return False
+    return bool(_NEGATION_RE.search(a)) != bool(_NEGATION_RE.search(b))
 
 
 def detect_conflicts(items: list[RetrievalItem]) -> list[dict]:
-    raise NotImplementedError("Phase 2 (ARCH §7.6)")
+    flags: list[dict] = []
+
+    # (a) same section_number, different active document_versions, different text.
+    by_section: dict[str, list[RetrievalItem]] = {}
+    for item in items:
+        section_number = item.get("section_number")
+        if item.get("version_status") == "active" and section_number:
+            by_section.setdefault(section_number, []).append(item)
+    for section_number, group in by_section.items():
+        for a, b in combinations(group, 2):
+            if a["document_version_id"] == b["document_version_id"]:
+                continue
+            if _materially_different(a["text"], b["text"]):
+                flags.append(
+                    {
+                        "chunk_id_a": a["chunk_id"],
+                        "chunk_id_b": b["chunk_id"],
+                        "reason": "same_section_diff_versions",
+                        "section_number": section_number,
+                    }
+                )
+
+    # (b) lexical contradiction pass over recommendation chunks.
+    recs = [it for it in items if it.get("chunk_type") == "recommendation"]
+    for a, b in combinations(recs, 2):
+        if a["chunk_id"] == b["chunk_id"]:
+            continue
+        if _lexically_contradicts(a["text"], b["text"]):
+            flags.append(
+                {
+                    "chunk_id_a": a["chunk_id"],
+                    "chunk_id_b": b["chunk_id"],
+                    "reason": "lexical_contradiction",
+                }
+            )
+
+    return flags

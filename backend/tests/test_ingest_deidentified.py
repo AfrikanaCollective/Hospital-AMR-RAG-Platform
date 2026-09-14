@@ -80,25 +80,38 @@ def test_ingest_script_refuses_without_attest_flag() -> None:
 def test_ingest_script_refuses_incomplete_attestation(tmp_path: Path) -> None:
     d = tmp_path / "ds"
     d.mkdir()
-    (d / "rag_dataset.csv").write_text('"key","field_name","field_value","context"\n1,"age_days","1","demographics"\n')
+    (d / "rag_dataset.csv").write_text(
+        '"key","field_name","field_value","context"\n1,"age_days","1","demographics"\n'
+    )
     (d / "field_mapping.yaml").write_text(
         'dataset_id: t\nprovenance: deidentified-anonymised\nschema_version: "1.3.0"\n'
         'identity: { record_id: "{key}", mrn: "DEID-{key}" }\nfields: {}\nlist_targets: {}\n'
     )
-    fm = "\n".join(f"{f}: {'TODO_CONFIRM' if f == 'licence' else 'x'}" for f in REQUIRED_ATTESTATION_FIELDS)
+    fm = "\n".join(
+        f"{f}: {'TODO_CONFIRM' if f == 'licence' else 'x'}" for f in REQUIRED_ATTESTATION_FIELDS
+    )
     (d / "DATASET.md").write_text(f"---\n{fm}\n---\n# incomplete\n")
     rc = ingest_main(["--dataset-dir", str(d), "--attest-deidentified"])
     assert rc == 2
 
 
-@pytest.mark.skipif(not (DATASET_DIR / "rag_dataset.csv").exists(),
-                    reason="real de-identified dataset not present (expected in CI)")
+@pytest.mark.skipif(
+    not (DATASET_DIR / "rag_dataset.csv").exists(),
+    reason="real de-identified dataset not present (expected in CI)",
+)
 def test_ingest_script_runs_with_complete_attestation(tmp_path: Path) -> None:
     out = tmp_path / "records.json"
-    rc = ingest_main([
-        "--dataset-dir", str(DATASET_DIR), "--attest-deidentified",
-        "--limit", "25", "--out", str(out),
-    ])
+    rc = ingest_main(
+        [
+            "--dataset-dir",
+            str(DATASET_DIR),
+            "--attest-deidentified",
+            "--limit",
+            "25",
+            "--out",
+            str(out),
+        ]
+    )
     assert rc == 0 and out.exists()
     import json
 

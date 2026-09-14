@@ -10,8 +10,37 @@ get_version_status.
 
 from __future__ import annotations
 
+import uuid
+
 from app.agents.state import GraphState
+from app.db.session import session_scope
+from app.retrieval.hybrid import retrieve
+
+# Indirection points for tests: monkeypatch to avoid a real Qdrant/embedding
+# call, and/or a real DB connection.
+_RETRIEVE_FN = retrieve
+_SESSION_SCOPE = session_scope
 
 
 def run(state: GraphState) -> GraphState:
-    raise NotImplementedError("Phase 2/3 (ARCH §7, ARCH-003)")
+    patient_id = state.get("patient_id")
+    conversation_id = state.get("conversation_id")
+    user_id = state.get("user_id")
+    roles = state.get("roles")
+    actor_role = roles[0] if roles else None
+    with _SESSION_SCOPE() as session:
+        items, snapshot = _RETRIEVE_FN(
+            state["query"],
+            session=session,
+            conversation_id=uuid.UUID(conversation_id) if conversation_id else None,
+            patient_id=uuid.UUID(patient_id) if patient_id else None,
+            actor_id=uuid.UUID(user_id) if user_id else None,
+            actor_role=actor_role,
+            purpose=state.get("purpose"),
+        )
+    state["retrieval"] = items
+    state["retrieval_confidence"] = {
+        **snapshot["confidence"],
+        "conflicts": snapshot.get("conflicts", []),
+    }
+    return state

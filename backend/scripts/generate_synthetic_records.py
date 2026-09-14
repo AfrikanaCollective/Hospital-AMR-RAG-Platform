@@ -70,19 +70,38 @@ class DomainLib:
 NEONATAL = DomainLib(
     name="neonatal",
     care_settings=[
-        "Newborn Unit", "Kangaroo Mother Care ward", "Nursery", "Special Care Nursery",
-        "Postnatal ward", "Labour ward",
+        "Newborn Unit",
+        "Kangaroo Mother Care ward",
+        "Nursery",
+        "Special Care Nursery",
+        "Postnatal ward",
+        "Labour ward",
     ],
     complaints=[
-        "difficulty breathing", "not feeding well", "lethargy", "fever",
-        "hypothermia", "jaundice", "convulsions", "grunting", "poor cry",
-        "abdominal distension", "apnoea",
+        "difficulty breathing",
+        "not feeding well",
+        "lethargy",
+        "fever",
+        "hypothermia",
+        "jaundice",
+        "convulsions",
+        "grunting",
+        "poor cry",
+        "abdominal distension",
+        "apnoea",
     ],
     problems=[
-        "prematurity", "low birth weight", "neonatal jaundice",
-        "respiratory distress syndrome", "birth asphyxia", "hypoxic-ischaemic encephalopathy",
-        "possible serious bacterial infection", "neonatal sepsis", "hypoglycaemia",
-        "hypothermia", "feeding difficulty",
+        "prematurity",
+        "low birth weight",
+        "neonatal jaundice",
+        "respiratory distress syndrome",
+        "birth asphyxia",
+        "hypoxic-ischaemic encephalopathy",
+        "possible serious bacterial infection",
+        "neonatal sepsis",
+        "hypoglycaemia",
+        "hypothermia",
+        "feeding difficulty",
     ],
     drugs=[
         ("benzylpenicillin", "50000 IU/kg", "IV", "12-hourly"),
@@ -109,13 +128,28 @@ ADULT_INPATIENT = DomainLib(
     name="adult_inpatient",
     care_settings=["ED", "general ward", "HDU", "ICU", "surgical ward", "medical ward"],
     complaints=[
-        "shortness of breath", "chest pain", "fever and cough", "abdominal pain",
-        "confusion", "fall", "vomiting", "reduced urine output", "leg swelling",
-        "headache", "back pain", "palpitations",
+        "shortness of breath",
+        "chest pain",
+        "fever and cough",
+        "abdominal pain",
+        "confusion",
+        "fall",
+        "vomiting",
+        "reduced urine output",
+        "leg swelling",
+        "headache",
+        "back pain",
+        "palpitations",
     ],
     problems=[
-        "type 2 diabetes mellitus", "hypertension", "chronic kidney disease stage 3",
-        "atrial fibrillation", "COPD", "heart failure", "asthma", "ischaemic heart disease",
+        "type 2 diabetes mellitus",
+        "hypertension",
+        "chronic kidney disease stage 3",
+        "atrial fibrillation",
+        "COPD",
+        "heart failure",
+        "asthma",
+        "ischaemic heart disease",
     ],
     drugs=[
         ("amoxicillin", "500 mg", "oral", "TDS"),
@@ -139,6 +173,21 @@ ADULT_INPATIENT = DomainLib(
 
 DOMAIN_LIBS: dict[str, DomainLib] = {NEONATAL.name: NEONATAL, ADULT_INPATIENT.name: ADULT_INPATIENT}
 DEFAULT_DOMAIN = os.environ.get("RECORD_DOMAIN", "neonatal")
+
+# Per-field omission probabilities when a record is generated `sparse=True`
+# (feeding `missing_info_expected` eval cases, ARCH §15.1) — each field is
+# independently dropped at its own rate so sparse records look realistically
+# patchy rather than uniformly empty.
+_SPARSE_OMIT_DOB_PROB = 0.3
+_SPARSE_OMIT_GESTATIONAL_AGE_PROB = 0.4
+_SPARSE_OMIT_BIRTH_WEIGHT_PROB = 0.4
+_SPARSE_OMIT_VITALS_PROB = 0.5
+_SPARSE_OMIT_LABS_PROB = 0.6
+_SPARSE_OMIT_CARE_SETTING_PROB = 0.4
+_SPARSE_OMIT_PRESENTING_COMPLAINT_PROB = 0.2
+# Independent of sparseness: background rates for optional fields on every record.
+_ALLERGY_ABSENT_PROB = 0.85  # most records have no recorded allergy
+_RESEARCH_OPT_OUT_PROB = 0.1
 
 
 def _neonatal_vitals(rng: random.Random, at: datetime, birth_weight_g: float, dol: int) -> Vitals:
@@ -165,23 +214,31 @@ def _adult_vitals(rng: random.Random, at: datetime) -> Vitals:
     )
 
 
-def _mk_record(rng: random.Random, fake: object, idx: int, sparse: bool, lib: DomainLib) -> PatientRecord:
+def _mk_record(
+    rng: random.Random, fake: object, idx: int, sparse: bool, lib: DomainLib
+) -> PatientRecord:
     admitted = datetime.now(UTC) - timedelta(hours=rng.randint(2, 240))
     given = fake.first_name() if fake else f"Synth{idx:04d}"
     family = fake.last_name() if fake else f"Patient{idx:04d}"
 
-    dob = None if sparse and rng.random() < 0.3 else (
-        datetime.now(UTC).date()
-        - timedelta(days=rng.randint(lib.dob_min_days, lib.dob_max_days))
+    dob = (
+        None
+        if sparse and rng.random() < _SPARSE_OMIT_DOB_PROB
+        else (
+            datetime.now(UTC).date()
+            - timedelta(days=rng.randint(lib.dob_min_days, lib.dob_max_days))
+        )
     )
 
     ga_weeks = birth_weight_g = dol = None
     if lib.neonatal:
         dol = (datetime.now(UTC).date() - dob).days if dob else rng.randint(0, 28)
-        ga_weeks = None if sparse and rng.random() < 0.4 else round(rng.uniform(26.0, 41.5), 1)
-        birth_weight_g = None if sparse and rng.random() < 0.4 else float(rng.randint(650, 4200))
+        omit_ga = sparse and rng.random() < _SPARSE_OMIT_GESTATIONAL_AGE_PROB
+        ga_weeks = None if omit_ga else round(rng.uniform(26.0, 41.5), 1)
+        omit_bw = sparse and rng.random() < _SPARSE_OMIT_BIRTH_WEIGHT_PROB
+        birth_weight_g = None if omit_bw else float(rng.randint(650, 4200))
 
-    n_vitals = 0 if sparse and rng.random() < 0.5 else rng.randint(1, 4)
+    n_vitals = 0 if sparse and rng.random() < _SPARSE_OMIT_VITALS_PROB else rng.randint(1, 4)
     vitals: list[Vitals] = []
     for h in range(n_vitals):
         at = admitted + timedelta(hours=h * 6)
@@ -190,7 +247,7 @@ def _mk_record(rng: random.Random, fake: object, idx: int, sparse: bool, lib: Do
         else:
             vitals.append(_adult_vitals(rng, at))
 
-    n_labs = 0 if sparse and rng.random() < 0.6 else rng.randint(1, 5)
+    n_labs = 0 if sparse and rng.random() < _SPARSE_OMIT_LABS_PROB else rng.randint(1, 5)
     labs: list[LabResult] = []
     for analyte, unit, lo, hi, rlo, rhi in rng.sample(lib.labs, k=min(n_labs, len(lib.labs))):
         labs.append(
@@ -221,21 +278,30 @@ def _mk_record(rng: random.Random, fake: object, idx: int, sparse: bool, lib: Do
         encounter=Encounter(
             admitted_at=admitted,
             ward=None if sparse else rng.choice(["NBU-A", "NBU-B", "KMC", "4A", "6C", "AMU"]),
-            care_setting=None if sparse and rng.random() < 0.4 else rng.choice(lib.care_settings),
-            presenting_complaint=None if sparse and rng.random() < 0.2 else rng.choice(lib.complaints),
+            care_setting=(
+                None
+                if sparse and rng.random() < _SPARSE_OMIT_CARE_SETTING_PROB
+                else rng.choice(lib.care_settings)
+            ),
+            presenting_complaint=(
+                None
+                if sparse and rng.random() < _SPARSE_OMIT_PRESENTING_COMPLAINT_PROB
+                else rng.choice(lib.complaints)
+            ),
             triage_category=None if sparse else str(rng.randint(1, 5)),
             gestational_age_weeks=ga_weeks,
             birth_weight_g=birth_weight_g,
             day_of_life=dol if lib.neonatal else None,
         ),
         problems=[] if sparse else rng.sample(lib.problems, k=rng.randint(0, 3)),
-        allergies=[] if rng.random() < 0.85 else ["penicillin"],
+        allergies=[] if rng.random() < _ALLERGY_ABSENT_PROB else ["penicillin"],
         medications=meds,
         vitals=vitals,
         labs=labs,
-        clinical_notes=None if sparse
+        clinical_notes=None
+        if sparse
         else f"Synthetic {lib.name} note: presented with {rng.choice(lib.complaints)}; for review.",
-        consent_flags={"research_opt_out": rng.random() < 0.1},
+        consent_flags={"research_opt_out": rng.random() < _RESEARCH_OPT_OUT_PROB},
     )
 
 

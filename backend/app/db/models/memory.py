@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, LargeBinary, String
+from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,7 +28,7 @@ class Conversation(UUIDPk, TimestampMixin, Base):
     user_id: Mapped[uuid.UUID] = mapped_column()
     patient_id: Mapped[uuid.UUID | None] = mapped_column()  # <= 1 patient per conversation
     status: Mapped[str] = mapped_column(String(16), default="active")  # active|closed|handoff
-    closed_at: Mapped[datetime | None] = mapped_column()
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Message(UUIDPk, TimestampMixin, Base):
@@ -58,8 +58,8 @@ class PatientContext(UUIDPk, TimestampMixin, Base):
     )  # model_provisional | reviewer_accepted | reviewer_edited | rejected
     source_message_id: Mapped[uuid.UUID | None] = mapped_column()
     result_id: Mapped[uuid.UUID | None] = mapped_column()  # for rollback on reject
-    valid_from: Mapped[datetime] = mapped_column()
-    valid_to: Mapped[datetime | None] = mapped_column()
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column()
 
 
@@ -75,7 +75,7 @@ class LangGraphCheckpoint(Base):
     parent_id: Mapped[str | None] = mapped_column(String(128))
     state: Mapped[dict] = mapped_column(JSONB, default=dict)
     tied_escalation_id: Mapped[uuid.UUID | None] = mapped_column()  # retain until resolved
-    created_at: Mapped[datetime] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 # NOTE: operational hot state (active window, streaming partials, rate

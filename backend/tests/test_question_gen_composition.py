@@ -10,7 +10,8 @@ from app.schemas.enums import ExpectedOutcome
 
 def test_default_is_60_20_20_and_hard_fraction_40() -> None:
     comp = Composition.parse("60,20,20")
-    assert (comp.well_supported, comp.missing_info_expected, comp.no_guideline_expected) == (60, 20, 20)
+    parts = (comp.well_supported, comp.missing_info_expected, comp.no_guideline_expected)
+    assert parts == (60, 20, 20)
     assert comp.hard_fraction == 40  # missing_info + no_guideline
 
 

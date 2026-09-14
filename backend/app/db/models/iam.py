@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPk
@@ -59,5 +59,5 @@ class Session(UUIDPk, TimestampMixin, Base):
     __table_args__ = {"schema": SCHEMA}
 
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.user.id"))
-    expires_at: Mapped[datetime] = mapped_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)

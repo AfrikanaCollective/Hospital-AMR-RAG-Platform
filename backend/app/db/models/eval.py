@@ -15,6 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -42,10 +43,14 @@ class EvalQuestion(UUIDPk, TimestampMixin, Base):
         String(24)
     )  # well_supported | missing_info_expected | no_guideline_expected  (auto-generated)
     source_record_id: Mapped[uuid.UUID | None] = mapped_column()
-    target_guideline_ref: Mapped[dict | None] = mapped_column(JSONB)  # None for no_guideline_expected
+    target_guideline_ref: Mapped[dict | None] = mapped_column(
+        JSONB
+    )  # None for no_guideline_expected
     gold_relevant_chunks: Mapped[list | None] = mapped_column(JSONB)
     gold_citations: Mapped[list | None] = mapped_column(JSONB)
-    generator_meta: Mapped[dict | None] = mapped_column(JSONB)  # model_id, template_version, validator_report
+    generator_meta: Mapped[dict | None] = mapped_column(
+        JSONB
+    )  # model_id, template_version, validator_report
     in_fixed_testset: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -68,7 +73,9 @@ class Result(UUIDPk, TimestampMixin, Base):
     citations: Mapped[list] = mapped_column(JSONB, default=list)
     retrieval_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     grounding_report: Mapped[dict] = mapped_column(JSONB, default=dict)
-    config_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)  # model ids, thresholds, corpus snapshot
+    config_snapshot: Mapped[dict] = mapped_column(
+        JSONB, default=dict
+    )  # model ids, thresholds, corpus snapshot
     queue_state: Mapped[str] = mapped_column(
         String(16), default="not_queued"
     )  # not_queued | open | archived
@@ -106,7 +113,7 @@ class RatingRound(UUIDPk, Base):
     rater_id: Mapped[uuid.UUID] = mapped_column()
     is_original_rater: Mapped[bool] = mapped_column(Boolean, default=False)
     accept_action_id: Mapped[uuid.UUID | None] = mapped_column()  # -> hitl.hitl_decision
-    submitted_at: Mapped[datetime] = mapped_column()
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class RubricRating(UUIDPk, Base):
@@ -124,7 +131,7 @@ class RubricRating(UUIDPk, Base):
     rater_id: Mapped[uuid.UUID] = mapped_column()
     domain_code: Mapped[str] = mapped_column(ForeignKey(f"{SCHEMA}.rubric_domain.code"))
     score: Mapped[int] = mapped_column(SmallInteger)  # 1..5
-    rated_at: Mapped[datetime] = mapped_column()
+    rated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     rating_round_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.rating_round.id"))
     comment: Mapped[str | None] = mapped_column(Text)  # optional adjunct only
 
@@ -142,7 +149,7 @@ class IRRScore(UUIDPk, Base):
     value: Mapped[float] = mapped_column(Float)
     n_raters: Mapped[int] = mapped_column(Integer)
     n_items: Mapped[int] = mapped_column(Integer, default=1)
-    computed_at: Mapped[datetime] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class IRRBatch(UUIDPk, TimestampMixin, Base):
@@ -153,7 +160,9 @@ class IRRBatch(UUIDPk, TimestampMixin, Base):
     __tablename__ = "irr_batch"
     __table_args__ = {"schema": SCHEMA}
 
-    slice_definition: Mapped[dict] = mapped_column(JSONB)  # e.g. {provenance, expected_outcome, ...}
+    slice_definition: Mapped[dict] = mapped_column(
+        JSONB
+    )  # e.g. {provenance, expected_outcome, ...}
     metric: Mapped[str] = mapped_column(String(48), default="krippendorff_alpha_ordinal")
     per_domain: Mapped[dict] = mapped_column(JSONB, default=dict)  # {domain_code: alpha}
     secondary: Mapped[dict] = mapped_column(JSONB, default=dict)  # {gwet_ac2: {...}, icc_2k: {...}}
@@ -168,8 +177,10 @@ class ResultArchive(TimestampMixin, Base):
     __tablename__ = "result_archive"
     __table_args__ = {"schema": SCHEMA}
 
-    result_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.result.id"), primary_key=True)
-    archived_at: Mapped[datetime] = mapped_column()
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.result.id"), primary_key=True
+    )
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     rating_history: Mapped[dict] = mapped_column(JSONB)  # rounds, ratings, accept actions
     irr_snapshot: Mapped[dict] = mapped_column(JSONB)  # all irr_score rows at archival
     provenance: Mapped[str] = mapped_column(String(24))  # carried for separable reporting
@@ -184,5 +195,7 @@ class EvalRun(UUIDPk, TimestampMixin, Base):
     snapshot_label: Mapped[str] = mapped_column(String(64))
     corpus_snapshot_id: Mapped[uuid.UUID | None] = mapped_column()
     config_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
-    report: Mapped[dict] = mapped_column(JSONB, default=dict)  # metrics by expected_outcome + by provenance
+    report: Mapped[dict] = mapped_column(
+        JSONB, default=dict
+    )  # metrics by expected_outcome + by provenance
     passed: Mapped[bool] = mapped_column(Boolean, default=False)

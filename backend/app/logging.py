@@ -15,8 +15,16 @@ import logging
 from typing import Any
 
 _SENSITIVE_KEYS = {
-    "payload", "record", "mrn", "patient_record", "answer_text", "query_text",
-    "content", "prompt", "completion", "field_values",
+    "payload",
+    "record",
+    "mrn",
+    "patient_record",
+    "answer_text",
+    "query_text",
+    "content",
+    "prompt",
+    "completion",
+    "field_values",
 }
 
 
@@ -30,7 +38,7 @@ def _redact(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str,
 def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO), format="%(message)s")
     try:
-        import structlog
+        import structlog  # noqa: PLC0415 - optional dependency; see get_logger's matching fallback
     except ImportError:  # skeleton fallback
         return
     structlog.configure(
@@ -49,7 +57,7 @@ def configure_logging(level: str = "INFO") -> None:
 
 def get_logger(name: str | None = None) -> Any:
     try:
-        import structlog
+        import structlog  # noqa: PLC0415 - optional dependency: fall back to stdlib logging if absent
 
         return structlog.get_logger(name)
     except ImportError:

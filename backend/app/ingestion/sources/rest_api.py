@@ -31,7 +31,9 @@ class RestApiPullSource:
     def describe(self) -> SourceDescription:  # pragma: no cover - stub
         raise NotImplementedError("Phase 2+: RestApiPullSource (ARCH-039)")
 
-    def iter_records(self, *, limit: int | None = None) -> Iterator[PatientRecord]:  # pragma: no cover
+    def iter_records(
+        self, *, limit: int | None = None
+    ) -> Iterator[PatientRecord]:  # pragma: no cover
         raise NotImplementedError(
             "Phase 2+: pull from PATIENT_API_URL, pivot if EAV, apply the shared "
             "mapping spec, enforce the attestation gate, support incremental backfill."

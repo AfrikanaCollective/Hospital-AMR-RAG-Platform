@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +18,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 PLACEHOLDER_MODEL_ID = "<set-me>"
+
+# QGEN_COMPOSITION is "well_supported,missing_info_expected,no_guideline_expected"
+# (PRD-065) — always three percentages summing to 100.
+_QGEN_COMPOSITION_FIELDS = 3
+_QGEN_COMPOSITION_TOTAL_PERCENT = 100
+
+# Hosts where a plaintext http:// LLM_GATEWAY_URL is acceptable: the
+# docker-compose-internal stub/dev service and local-machine dev loops. ARCH
+# §19 is explicit that the REAL gateway is external, not part of the private
+# compose network the way Postgres/Redis/Qdrant are — so "private net" doesn't
+# cover it, and PRD-082 / ARCH §17.2 (encryption in transit for all
+# communication) applies. This also carries PHI-adjacent content for SCOPE-2
+# flows (stage classification, missing-info), not just guideline text.
+_GATEWAY_INSECURE_OK_HOSTS = {"llm-gateway", "localhost", "127.0.0.1", "0.0.0.0"}
 
 
 class Settings(BaseSettings):
@@ -30,6 +45,7 @@ class Settings(BaseSettings):
 
     # ── LLM gateway (ARCH-005 / PRD-101 / PRD-102) ──
     llm_gateway_url: str = "http://llm-gateway:8080"
+    llm_gateway_api_key: str = ""  # Bearer token; set only in your local .env, never committed
     model_id: str = PLACEHOLDER_MODEL_ID
     model_id_fallbacks: str = ""  # comma-separated
     model_id_verified: bool = False
@@ -42,7 +58,9 @@ class Settings(BaseSettings):
     # (e.g. BAAI/bge-large-en-v1.5); the gateway's own model tag when
     # "gateway" (e.g. qllama/bge-large-en-v1.5:latest per DEVIATIONS.md #42) —
     # these are NOT interchangeable strings for the same underlying model.
-    embedding_model_id: str = "BAAI/bge-large-en-v1.5"  # UNVERIFIED placeholder (local-backend format)
+    embedding_model_id: str = (
+        "BAAI/bge-large-en-v1.5"  # UNVERIFIED placeholder (local-backend format)
+    )
     embedding_model_verified: bool = False
     embedding_query_prefix: str = ""
     embedding_doc_prefix: str = ""
@@ -88,18 +106,33 @@ class Settings(BaseSettings):
 
     # ── patient records (ARCH-039 / DEVIATIONS #30, #33, #34) ──
     patient_records_dir: str = "data/patient_records"
-    record_domain: str = "neonatal"  # neonatal | adult_inpatient — MUST match the ingested corpus domain
-    deidentified_attestation_required: bool = True  # de-identified datasets need a complete DATASET.md attestation
+    record_domain: str = (
+        "neonatal"  # neonatal | adult_inpatient — MUST match the ingested corpus domain
+    )
+    deidentified_attestation_required: bool = (
+        True  # de-identified datasets need a complete DATASET.md attestation
+    )
 
     # ── database / async (ARCH-007 / ARCH-008) ──
     database_url: str = "postgresql+psycopg://hrag_app:hrag_app_pw@postgres:5432/hospital_rag"
+    # Alembic needs DDL (CREATE) privilege the restricted runtime hrag_app role
+    # deliberately does not have (deploy/postgres/init/01_schemas_roles.sql
+    # grants it only USAGE + DML). Separate, elevated credential — the
+    # already-provisioned Postgres superuser (docker-compose.yml POSTGRES_USER)
+    # — used ONLY by alembic/env.py, never by the running app (DEVIATIONS.md #61).
+    alembic_database_url: str = (
+        "postgresql+psycopg://hrag_admin:hrag_admin_pw@postgres:5432/hospital_rag"
+    )
     redis_url: str = "redis://:redis_pw@redis:6379/0"
     celery_broker_url: str = "redis://:redis_pw@redis:6379/1"
     celery_result_backend: str = "redis://:redis_pw@redis:6379/2"
 
     # ── auth / rbac (ARCH-011 / ARCH-034) ──
     auth_provider: str = "devjwt"  # devjwt | oidc
-    devjwt_signing_key: str = "dev-only-change-me"
+    # >=32 bytes (RFC 7518 §3.2 HMAC-SHA256 minimum) so PyJWT doesn't warn on
+    # every encode/decode; still an obvious, loudly-flagged dev placeholder
+    # (DevJwtProvider.__init__), never a real secret (ARCH-011).
+    devjwt_signing_key: str = "dev-only-change-me-32-bytes-minimum!!"
     devjwt_issuer: str = "hospital-rag-dev"
     oidc_issuer_url: str = ""
     oidc_client_id: str = ""
@@ -146,7 +179,7 @@ class Settings(BaseSettings):
     @property
     def qgen_composition_tuple(self) -> tuple[int, int, int]:
         parts = [int(x) for x in self.qgen_composition.split(",")]
-        if len(parts) != 3 or sum(parts) != 100:
+        if len(parts) != _QGEN_COMPOSITION_FIELDS or sum(parts) != _QGEN_COMPOSITION_TOTAL_PERCENT:
             raise ValueError("QGEN_COMPOSITION must be three integers summing to 100")
         return parts[0], parts[1], parts[2]
 
@@ -161,10 +194,10 @@ class Settings(BaseSettings):
         """
         if self.is_model_placeholder():
             msg = (
-                "MODEL_ID is the placeholder (%r). Set MODEL_ID to a model id "
-                "verified against the self-hosted gateway's current docs. "
+                f"MODEL_ID is the placeholder ({PLACEHOLDER_MODEL_ID!r}). Set MODEL_ID to a "
+                "model id verified against the self-hosted gateway's current docs. "
                 "The build does not guess model names (constraint #6)."
-            ) % PLACEHOLDER_MODEL_ID
+            )
             if require_answer_path:
                 raise RuntimeError(msg)
             logger.warning(msg)
@@ -185,6 +218,26 @@ class Settings(BaseSettings):
                     label,
                     mid,
                 )
+
+    def validate_gateway_transport(self) -> None:
+        """PRD-082 / ARCH §17.2 (encryption in transit for all communication),
+        DEVIATIONS.md #54. Warns (does not block — the docker-compose stub
+        profile legitimately uses http://) when `LLM_GATEWAY_URL` is plaintext
+        against a host that isn't a recognized internal/dev one."""
+        parsed = urlparse(self.llm_gateway_url)
+        if parsed.scheme == "https":
+            return
+        if parsed.hostname in _GATEWAY_INSECURE_OK_HOSTS:
+            return
+        logger.warning(
+            "LLM_GATEWAY_URL=%r uses %r, not https. The real LLM gateway is external "
+            "(ARCHITECTURE.md §19), not on the same private network as Postgres/Redis/"
+            "Qdrant, and this call path carries PHI-adjacent content for SCOPE-2 flows. "
+            "Use an https:// URL for any gateway other than the recognized "
+            "docker-compose-internal stub (PRD-082, ARCH §17.2, DEVIATIONS.md #54).",
+            self.llm_gateway_url,
+            parsed.scheme,
+        )
 
 
 @lru_cache

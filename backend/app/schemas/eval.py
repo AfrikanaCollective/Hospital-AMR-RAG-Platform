@@ -41,5 +41,6 @@ class EvalRunReport(BaseModel):
     citation: dict = Field(default_factory=dict)
     expected_outcome_pass: dict = Field(default_factory=dict)
     scope_safety: dict = Field(default_factory=dict)  # must show 0 violations, 100% disclaimer
-    by_provenance: dict = Field(default_factory=dict)  # {auto_generated: {...}, clinician_submitted: {...}}
+    # {auto_generated: {...}, clinician_submitted: {...}}
+    by_provenance: dict = Field(default_factory=dict)
     passed: bool = False

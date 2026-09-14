@@ -42,7 +42,10 @@ async def rerank(body: dict) -> dict:
 
 
 def main() -> None:
-    import uvicorn
+    # Deferred: uvicorn is only needed to run this stub as a standalone
+    # script; keeping it out of the module-level imports lets `app` stay
+    # importable (e.g. for TestClient) without requiring uvicorn installed.
+    import uvicorn  # noqa: PLC0415
 
     uvicorn.run(app, host="0.0.0.0", port=8080)
 

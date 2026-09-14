@@ -1,4 +1,7 @@
-"""Synthetic record generator: valid, clearly-synthetic, domain-aware (PRD-006, PRD-081; DEVIATIONS #30)."""
+"""Synthetic record generator: valid, clearly-synthetic, domain-aware.
+
+PRD-006, PRD-081; DEVIATIONS #30.
+"""
 
 from __future__ import annotations
 
@@ -46,8 +49,9 @@ def test_neonatal_profile_produces_neonatal_content() -> None:
     assert problems & {"prematurity", "neonatal jaundice", "possible serious bacterial infection"}
     assert not (problems & {"COPD", "atrial fibrillation"})
     # weight-based dosing and neonatal encounter fields are populated
-    assert any("mg/kg" in (m.dose or "") or "IU/kg" in (m.dose or "")
-               for r in recs for m in r.medications)
+    assert any(
+        "mg/kg" in (m.dose or "") or "IU/kg" in (m.dose or "") for r in recs for m in r.medications
+    )
     assert any(r.encounter.birth_weight_g is not None for r in recs)
     assert any(v.weight_g is not None for r in recs for v in r.vitals)
 

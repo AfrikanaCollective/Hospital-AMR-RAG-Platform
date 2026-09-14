@@ -292,6 +292,8 @@ pygments==2.21.0
     # via
     #   pytest
     #   rich
+pyjwt==2.14.0
+    # via hospital-rag-platform (pyproject.toml)
 pypdf==6.18.1
     # via hospital-rag-platform (pyproject.toml)
 pyproject-hooks==1.2.0

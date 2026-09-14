@@ -16,13 +16,21 @@ class RetrievalItem(TypedDict):
     chunk_id: str
     score: float
     section_path: str | None
+    section_number: str | None
     page_start: int
     page_end: int
     char_start: int
     char_end: int
+    document_id: str
+    document_title: str
     document_version_id: str
+    version_label: str
+    effective_date: str | None
     version_status: str
+    chunk_type: str
     text: str
+    heading: str | None
+    meta: dict[str, Any]  # includes criteria[] for chunk_type=criteria (ARCH §6 rule 4)
 
 
 class GraphState(TypedDict, total=False):
@@ -40,6 +48,7 @@ class GraphState(TypedDict, total=False):
     scope_label: ScopeLabel
 
     # patient path (SCOPE-2.*)
+    required_field_paths: list[str]  # narrows patient_record_agent's fetch, when known
     patient_features: dict[str, Any]  # authorized fields only
     stage_classification: dict[str, Any] | None
     missing_info: list[dict[str, Any]]

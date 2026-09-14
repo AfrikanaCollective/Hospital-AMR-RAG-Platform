@@ -22,6 +22,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.schemas.record import SCHEMA_VERSION, PatientRecord
 
 # ── transforms ──────────────────────────────────────────────────────────────
@@ -109,9 +111,7 @@ class MappingSpec:
     derived: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "MappingSpec":
-        import yaml
-
+    def from_yaml(cls, path: str | Path) -> MappingSpec:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         return cls(
             dataset_id=raw["dataset_id"],
@@ -169,15 +169,9 @@ def _set_path(target: dict[str, Any], dotted: str, value: Any) -> None:
         cur[last] = value
 
 
-def apply_mapping(key: str, wide: dict[str, str], spec: MappingSpec) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "schema_version": spec.schema_version,
-        "dataset_provenance": spec.provenance,
-        "record_id": spec.identity["record_id"].format(key=key),
-        "mrn": spec.identity["mrn"].format(key=key),
-    }
-
-    # single-value fields
+def _apply_single_value_fields(
+    out: dict[str, Any], wide: dict[str, str], spec: MappingSpec
+) -> None:
     for src, rule in spec.fields.items():
         if src not in wide:
             continue
@@ -189,7 +183,8 @@ def apply_mapping(key: str, wide: dict[str, str], spec: MappingSpec) -> dict[str
         if val is not None:
             _set_path(out, rule["target"], val)
 
-    # vitals timestamps
+
+def _apply_vitals_timestamps(out: dict[str, Any], wide: dict[str, str], spec: MappingSpec) -> None:
     if spec.vitals_recorded_at_from and spec.vitals_recorded_at_from in wide:
         ts = _parse_datetime(wide[spec.vitals_recorded_at_from])
         for v in out.get("vitals", []):
@@ -197,51 +192,77 @@ def apply_mapping(key: str, wide: dict[str, str], spec: MappingSpec) -> dict[str
 
     # drop a vitals[0] that ended up with only a timestamp
     out["vitals"] = [
-        v for v in out.get("vitals", [])
+        v
+        for v in out.get("vitals", [])
         if any(k != "recorded_at" and val is not None for k, val in v.items())
     ]
 
-    # repeated-field families -> list[...]
+
+def _build_list_target_item(
+    member: str, wide: dict[str, str], grp: dict[str, Any], ts: datetime | None
+) -> dict[str, Any] | None:
+    if member not in wide:
+        return None
+    try:
+        flag = _bool_truthy(wide[member])
+    except ValueError:
+        return None
+    if flag is None:
+        return None
+    item: dict[str, Any] = {"name": member}
+    if "present_key" in grp:
+        item[grp["present_key"]] = flag
+    if "active_key" in grp:
+        item[grp["active_key"]] = flag
+    if ts is not None and "ts_key" in grp:
+        item[grp["ts_key"]] = ts.isoformat()
+    return item
+
+
+def _apply_list_targets(out: dict[str, Any], wide: dict[str, str], spec: MappingSpec) -> None:
     for grp in spec.list_targets.values():
-        items: list[dict[str, Any]] = []
         ts_src = grp.get("recorded_at_from") or grp.get("started_at_from")
         ts = _parse_datetime(wide[ts_src]) if ts_src and ts_src in wide else None
-        for member in grp["members"]:
-            if member not in wide:
-                continue
-            try:
-                flag = _bool_truthy(wide[member])
-            except ValueError:
-                continue
-            if flag is None:
-                continue
-            item: dict[str, Any] = {"name": member}
-            if "present_key" in grp:
-                item[grp["present_key"]] = flag
-            if "active_key" in grp:
-                item[grp["active_key"]] = flag
-            if ts is not None and "ts_key" in grp:
-                item[grp["ts_key"]] = ts.isoformat()
-            items.append(item)
+        items = [
+            item
+            for member in grp["members"]
+            if (item := _build_list_target_item(member, wide, grp, ts)) is not None
+        ]
         if items:
             out[grp["target"]] = items
 
-    # derived
-    for name, rule in spec.derived.items():
-        if rule.get("rule") == "admitted_minus_days":
-            adm = out.get("encounter", {}).get("admitted_at")
-            dol = out.get("encounter", {}).get("day_of_life")
-            if adm and dol is not None:
-                d = _parse_datetime(adm) if isinstance(adm, str) else adm
-                out[name] = (d - timedelta(days=int(dol))).date().isoformat()
 
-    # defaults (only where unset)
+def _apply_derived_fields(out: dict[str, Any], spec: MappingSpec) -> None:
+    for name, rule in spec.derived.items():
+        if rule.get("rule") != "admitted_minus_days":
+            continue
+        adm = out.get("encounter", {}).get("admitted_at")
+        dol = out.get("encounter", {}).get("day_of_life")
+        if adm and dol is not None:
+            d = _parse_datetime(adm) if isinstance(adm, str) else adm
+            out[name] = (d - timedelta(days=int(dol))).date().isoformat()
+
+
+def _apply_defaults(out: dict[str, Any], spec: MappingSpec) -> None:
     for path, value in spec.defaults.items():
         if "." in path:
             _set_path(out, path, value)
         else:
             out.setdefault(path, value)
 
+
+def apply_mapping(key: str, wide: dict[str, str], spec: MappingSpec) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "schema_version": spec.schema_version,
+        "dataset_provenance": spec.provenance,
+        "record_id": spec.identity["record_id"].format(key=key),
+        "mrn": spec.identity["mrn"].format(key=key),
+    }
+    _apply_single_value_fields(out, wide, spec)
+    _apply_vitals_timestamps(out, wide, spec)
+    _apply_list_targets(out, wide, spec)
+    _apply_derived_fields(out, spec)
+    _apply_defaults(out, spec)
     return out
 
 

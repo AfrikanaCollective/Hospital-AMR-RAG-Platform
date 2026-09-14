@@ -15,8 +15,14 @@ AGENT_TOOLS: dict[str, frozenset[str]] = {
         {"classify_scope", "dispatch", "assemble_response", "apply_disclaimer", "open_escalation"}
     ),
     "retrieval": frozenset(
-        {"hybrid_search", "rerank", "expand_context", "list_corpus_topics",
-         "get_chunk", "get_version_status"}
+        {
+            "hybrid_search",
+            "rerank",
+            "expand_context",
+            "list_corpus_topics",
+            "get_chunk",
+            "get_version_status",
+        }
     ),
     "patient_record": frozenset({"list_record_fields", "get_patient_fields"}),
     "stage_classifier": frozenset(

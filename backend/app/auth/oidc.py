@@ -12,4 +12,6 @@ from app.auth.provider import AuthContext
 
 class OidcProvider:
     def authenticate(self, token: str) -> AuthContext:
-        raise NotImplementedError("Deferred: OIDC verification (ARCH-011). Use AUTH_PROVIDER=devjwt.")
+        raise NotImplementedError(
+            "Deferred: OIDC verification (ARCH-011). Use AUTH_PROVIDER=devjwt."
+        )

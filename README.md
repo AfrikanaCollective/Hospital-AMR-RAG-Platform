@@ -24,9 +24,9 @@ evaluation workflow.
 |---|---|---|
 | **0** | Product & architecture docs | ✅ complete (Checkpoint 0 approved) |
 | **1** | Agent instructions & scaffolding | ✅ complete (Checkpoint 1 approved 2026-09-12) |
-| 2 | Ingestion & hybrid retrieval core | ⬜ not started — next checkpoint |
-| 3 | Multi-agent orchestration & HITL | ⬜ not started |
-| 4 | API & backend hardening | ⬜ not started |
+| **2** | Ingestion & hybrid retrieval core | ✅ complete (Checkpoint 2 approved 2026-09-14) |
+| **3** | Multi-agent orchestration & HITL | ✅ complete (Checkpoint 3 approved 2026-09-14) |
+| 4 | API & backend hardening | 🔄 in progress — auth foundation done, RBAC/RLS/routes/audit/async/Docker remain |
 | 5 | React frontend | ⬜ not started |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
@@ -40,7 +40,61 @@ them in; the deterministic, safety-relevant contracts (config/model
 verification, citation re-verification, directive-phrasing filter,
 recommendation-shaped-memory rejection, per-agent tool allow-list, audit
 hash-chain, 60/20/20 composition guard, CDS extension-seam stubs) are in place
-with **73 passing offline tests**.
+with **73 passing offline tests** (Phase 1 close).
+
+**Phase 2** implemented, with tests, real guideline parsing (`.pdf` + `.md`)
+and format-profile-aware chunking, BM25-style sparse vectors + the Qdrant
+vector store adapter, `local`-backend embedding and reranking, conflict
+detection, citation building, AES-256-GCM envelope encryption, real
+document/chunk/record persistence (Postgres + Qdrant, verified against real
+ephemeral infrastructure), the real initial Alembic migration (all 28 tables,
+row-level security, the audit append-only trigger), all four `/ingest/*` HTTP
+routes, and the auto-generated hypothetical question narrative
+generator/validator (ARCH §15.1 steps 3–6) — see `DEVIATIONS.md` #46–#67.
+**Checkpoint 2 was approved 2026-09-14.**
+
+**Phase 3** implements, with
+tests, the full agent topology as a real compiled LangGraph `StateGraph`
+(orchestrator, retrieval, patient-record, stage-classifier (SCOPE-2.1),
+missing-info (SCOPE-2.2), guideline-synthesis (SCOPE-1), citation-verifier —
+the enforced grounding gate — and escalation), a deterministic lexical scope
+classifier (never a model call for the CDS boundary decision itself — see
+`DEVIATIONS.md` #68), session conversation + per-patient context memory, the
+full HITL accept axis (full_accept / partial_accept / reject / out_of_scope) and escalation
+lifecycle, the complete multi-rater rubric workflow (rating capture, the open
+review queue, ≥3-distinct-rater enforcement, per-domain Krippendorff's alpha,
+archival), and the eval harness (metrics, gating thresholds, the CLI, and
+question-generation persistence closing out a Phase 2 gap). A new
+build-gating test (`test_scope_boundary.py`) runs six SCOPE-2.3/2.4-style
+prompts through the real compiled graph end to end and asserts zero
+recommendation content. A real, ephemeral-Postgres + Redis verification pass
+(not just offline mocks) exercised the whole stack — conversation/message
+encryption round-trip, patient_context accept/reject, the HITL escalation
+lifecycle, the audit hash chain and its append-only trigger, the rubric
+workflow through IRR + archival, the real LangGraph Postgres checkpointer,
+real Celery task enqueueing, and a full HTTP round trip through the live
+FastAPI app — and surfaced (and fixed) several real bugs offline tests could
+not have caught: `scripts/seed_db.py` was still a print-only stub blocking
+the rubric workflow's FK-constrained reference data, Krippendorff's alpha
+crashed on a unanimous single-item rating, and the checkpointer's DSN
+format/DDL-privilege/target-schema all needed fixes — see `DEVIATIONS.md`
+#68–#84. The pre-existing `ruff check`/`ruff format` backlog (229 findings +
+20 unformatted files, all in code predating this phase) is now cleared —
+`make lint` and `make test` both pass clean; see `DEVIATIONS.md` #85.
+**Checkpoint 3 was approved 2026-09-14.**
+
+**Phase 4 (in progress)** has so far implemented the real auth foundation:
+`app/auth/devjwt.py` (`DevJwtProvider`, PyJWT HS256 mint/verify), `POST
+/auth/dev-login` (mint a token for a seeded demo user by email — 404 unless
+`AUTH_PROVIDER=devjwt`, so it cannot exist in a real deployment), and
+`current_principal` now requires and verifies a real `Authorization: Bearer`
+token (no more permissive no-auth dev fallback) — see `DEVIATIONS.md` #86.
+Still outstanding for Phase 4: `record_field_policy` RBAC enforcement
+(`resolve_field_effect`), RLS GUC wiring from the caller's principal, the
+remaining `records`/`corpus`/`admin` route implementations, an "answer"
+audit-event gap, Celery-based async handling for long agent runs, and an
+end-to-end `docker compose up` verification pass.
+**408 passing offline tests** as of the last update.
 
 ### Repository layout
 
@@ -51,7 +105,7 @@ docker-compose.yml  Makefile  .env.example
 backend/
   app/
     main.py config.py logging.py worker.py
-    api/            FastAPI router + route stubs + deps + middleware
+    api/            FastAPI router + routes (query, hitl, rubric, review-queue, eval, ingest, ...) + deps + middleware
     schemas/        Pydantic API models (+ enums, citation, record, rubric, eval)
     db/models/      SQLAlchemy models, one module per schema
     agents/         LangGraph topology, 7 active agents + 2 extension-seam stubs, prompts/
@@ -66,7 +120,7 @@ backend/
     eval/           harness, metrics, run CLI, question_gen/ (planner/generate/validate)
     llm/            LLMGateway, offline stub + stub_server
     auth/ crypto/ audit/   AuthProvider, CryptoProvider, append-only audit writer
-  alembic/          migrations env (placeholder initial migration)
+  alembic/          real initial migration (28 tables, RLS, audit trigger — DEVIATIONS #61-63)
   ingestion/eav.py + ingestion/sources/   EAV pivot + mapping spec; FileEavSource / RestApiPullSource stub
   scripts/          generate_synthetic_records (--domain), prepare_sample_guidelines,
                     ingest_deidentified_records, seed_db
@@ -222,7 +276,8 @@ All config is via environment variables / `.env` (secrets via
 | `MODEL_ID` | `<set-me>` | primary LLM id; **answer path refuses to start on the placeholder** |
 | `MODEL_ID_FALLBACKS` | `` | comma-separated fallback model ids |
 | `MODEL_ID_VERIFIED` | `false` | set `true` only after checking the id against current gateway docs; `false` logs a startup warning |
-| `LLM_GATEWAY_URL` | `http://llm-gateway:8080` | self-hosted gateway |
+| `LLM_GATEWAY_URL` | `http://llm-gateway:8080` | self-hosted gateway; `http://` only accepted for the recognized docker-compose-internal stub — use `https://` for a real (external) gateway or startup logs a warning (DEVIATIONS.md #54) |
+| `LLM_GATEWAY_API_KEY` | `` | Bearer token for the LLM gateway, if it requires one; set only in your local `.env` |
 | `EMBEDDING_MODEL_ID` | `BAAI/bge-large-en-v1.5` | **UNVERIFIED placeholder** — format is backend-dependent: HuggingFace repo id for `local`, the gateway's own model tag (e.g. `qllama/bge-large-en-v1.5:latest`) for `gateway` |
 | `EMBEDDING_GATEWAY_URL` / `EMBEDDING_GATEWAY_API_KEY` | `` / `` | base URL + Bearer token for the embedding gateway (`EMBEDDING_BACKEND=gateway`); set only in your local `.env`, never committed |
 | `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` | **UNVERIFIED placeholder** — HuggingFace repo id (the only format needed now that the reranker backend is decided as `local`) |
@@ -254,9 +309,13 @@ All config is via environment variables / `.env` (secrets via
     standard, consent basis, licence, attested-by/date), and a
     **`field_mapping.yaml`** mapping its variables onto `record.py`
     (EAV/long → wide → schema). `make ingest-deid DATASET=<dir>` runs it
-    (refuses without a complete attestation). See ARCH-039 / DEVIATIONS.md
-    #33–#35, #38. The bundled example is `newborn_nbu_2021` (a de-identified
-    Kenya Newborn Unit dataset, EAV, ~40,871 patients).
+    (refuses without a complete attestation), writing a normalized JSON batch;
+    pass `--persist` (not yet the `make` target's default — it needs the real
+    Alembic migration, still pending, to have created the `records` schema
+    tables) to also write `patient`/`patient_record` rows to the database. See
+    ARCH-039 / DEVIATIONS.md #33–#35, #38, #57. The bundled example is
+    `newborn_nbu_2021` (a de-identified Kenya Newborn Unit dataset, EAV,
+    ~40,871 patients).
 - `data/sample_guidelines/` — **the guideline corpus. You supply this.** Drop
   real clinical-guideline PDFs here, then copy
   `data/sample_guidelines/manifest.example.json` to `manifest.json` and fill in

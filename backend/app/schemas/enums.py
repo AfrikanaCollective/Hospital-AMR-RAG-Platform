@@ -59,11 +59,20 @@ class GroundingVerdict(StrEnum):
 
 
 class HitlAcceptAction(StrEnum):
-    """ARCH §13.2 — accept axis (independent of rank mode)."""
+    """ARCH §13.2 — accept axis (independent of rank mode).
+
+    `OUT_OF_SCOPE` (DEVIATIONS.md #84) is a reviewer judgment about the
+    *request*, not the candidate answer: the reviewer determines this
+    question should never have reached synthesis/escalation at all (e.g. it
+    is actually SCOPE-2.3/2.4-shaped and the deterministic classifier missed
+    it, or it is non-clinical) — distinct from `REJECT`, which is a judgment
+    that an attempted answer was wrong/ungrounded/unsafe.
+    """
 
     FULL_ACCEPT = "full_accept"
     PARTIAL_ACCEPT = "partial_accept"
     REJECT = "reject"
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 class EscalationTrigger(StrEnum):

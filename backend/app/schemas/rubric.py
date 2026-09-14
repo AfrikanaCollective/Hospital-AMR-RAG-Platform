@@ -42,8 +42,9 @@ class DomainScore(BaseModel):
 class RatingRoundRequest(BaseModel):
     """One clinician's independent pass over one result (ARCH §14.2)."""
 
-    scores: list[DomainScore] = Field(min_length=len(RUBRIC_DOMAIN_CODES),
-                                      max_length=len(RUBRIC_DOMAIN_CODES))
+    scores: list[DomainScore] = Field(
+        min_length=len(RUBRIC_DOMAIN_CODES), max_length=len(RUBRIC_DOMAIN_CODES)
+    )
     comment: str | None = None
     # Independent accept-axis action captured in the same sitting (optional).
     accept_action: HitlAcceptAction | None = None

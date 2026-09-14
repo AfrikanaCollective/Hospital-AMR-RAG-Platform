@@ -6,13 +6,13 @@ middleware placeholder. Endpoint bodies are stubs (HTTP 501) until Phase 2+.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.router import api_router
 from app.api.middleware import RequestContextMiddleware
+from app.api.router import api_router
 from app.config import get_settings
 from app.logging import configure_logging, get_logger
 
@@ -26,7 +26,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Constraint #6: warn on unverified/placeholder model config at startup.
     # The answer path re-checks with require_answer_path=True before serving.
     settings.validate_model_config(require_answer_path=False)
-    logger.info("startup", app_env=settings.app_env, model_placeholder=settings.is_model_placeholder())
+    logger.info(
+        "startup", app_env=settings.app_env, model_placeholder=settings.is_model_placeholder()
+    )
     yield
     logger.info("shutdown")
 

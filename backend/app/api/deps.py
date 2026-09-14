@@ -7,16 +7,42 @@
 - `purpose_of_use` — required query/header attribute for patient-scoped calls;
   recorded in every audit row.
 
-Phase 1: signatures + a permissive dev fallback so the app boots. Phase 4
-implements real enforcement.
+`current_principal` (Phase 4) requires a real `Authorization: Bearer <token>`
+header, verified via `app.auth.provider.get_auth_provider()` (dev: HS256 JWT;
+prod: OIDC, stub). There is no more permissive dev fallback — a request with
+no/invalid token is `401`. Tests hit routes exclusively via
+`app.dependency_overrides[current_principal] = ...` (established throughout
+this suite since Phase 2/3), so this tightening doesn't touch them; only
+`GET /healthz` and OpenAPI schema introspection are ever exercised without an
+override, and neither depends on `current_principal`.
+
+`get_db` (`app.db.session.session_scope`) commits on a clean request, rolls
+back on an exception; the RLS GUC it can set (`patient_scope`) is wired at the
+specific call sites that hold a single authoritative `patient_id`
+(`app.records.access`, `app.memory.patient_context` callers), not generically
+here — `POST /query`'s `patient_id` lives in the request body, which isn't
+resolved yet when `get_db` itself runs as a dependency.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.auth.provider import get_auth_provider
+from app.db.session import session_scope
+
+# DEVIATIONS.md #75: the Phase-1 dev-auth fallback issues a bare string
+# user_id ("dev-user"), but several Phase-3 tables (memory.conversation.user_id,
+# hitl_decision.reviewer_id, ...) are UUID columns. `principal_uuid` derives a
+# stable UUID from a non-UUID principal id; once Phase 4 issues real UUID
+# principals, `uuid.UUID(principal.user_id)` succeeds directly and this
+# fallback is never reached.
+_PRINCIPAL_UUID_NAMESPACE = uuid.UUID("6a3b6b0e-6e2b-4b8a-9a8b-2b7e7c9b6a11")
 
 
 @dataclass(frozen=True)
@@ -26,15 +52,40 @@ class Principal:
     is_clinician: bool = False
 
 
-def get_db() -> Iterator[object]:
-    """Yield a DB session. Phase 2 wires app.db.session.SessionLocal + RLS GUC."""
-    raise NotImplementedError("Phase 2: database session wiring (ARCH-008, ARCH-034)")
+def principal_uuid(principal: Principal) -> uuid.UUID:
+    try:
+        return uuid.UUID(principal.user_id)
+    except ValueError:
+        return uuid.uuid5(_PRINCIPAL_UUID_NAMESPACE, principal.user_id)
 
 
-def current_principal() -> Principal:
-    """Resolve the caller via app.auth.provider.AuthProvider. Phase 4."""
-    # Dev-only permissive fallback keeps the skeleton importable/bootable.
-    return Principal(user_id="dev-user", roles=frozenset({"clinician"}), is_clinician=True)
+def get_db() -> Iterator[Session]:
+    """Yield a DB session for one request: commits if the request handler
+    completes without raising, rolls back otherwise (`session_scope`).
+    `patient_scope` (the RLS GUC) is not yet threaded from the caller's
+    principal — Phase 4 (ARCH-034)."""
+    with session_scope() as session:
+        yield session
+
+
+_WWW_AUTHENTICATE = {"WWW-Authenticate": "Bearer"}
+
+
+def current_principal(authorization: str | None = Header(default=None)) -> Principal:
+    """Resolve the caller from `Authorization: Bearer <token>` via the
+    configured `AuthProvider` (ARCH-011, ARCH-034)."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "missing bearer token", headers=_WWW_AUTHENTICATE
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        ctx = get_auth_provider().authenticate(token)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "invalid or expired token", headers=_WWW_AUTHENTICATE
+        ) from exc
+    return Principal(user_id=ctx.user_id, roles=ctx.roles, is_clinician=ctx.is_clinician)
 
 
 def require_role(*allowed: str):

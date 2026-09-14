@@ -11,8 +11,8 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPk
@@ -29,7 +29,9 @@ class Document(UUIDPk, TimestampMixin, Base):
     publisher: Mapped[str | None] = mapped_column(String(256))
     source_uri: Mapped[str | None] = mapped_column(Text)
     classification: Mapped[str] = mapped_column(String(16), default="public")  # public | internal
-    licence: Mapped[str | None] = mapped_column(Text)  # usage terms, from the ingest manifest (ARCH-038)
+    licence: Mapped[str | None] = mapped_column(
+        Text
+    )  # usage terms, from the ingest manifest (ARCH-038)
 
 
 class DocumentVersion(UUIDPk, Base):
@@ -39,7 +41,7 @@ class DocumentVersion(UUIDPk, Base):
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.document.id"))
     version_label: Mapped[str] = mapped_column(String(64))
     effective_date: Mapped[date | None] = mapped_column()
-    ingested_at: Mapped[datetime] = mapped_column()
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey(f"{SCHEMA}.document_version.id")
     )
@@ -48,7 +50,9 @@ class DocumentVersion(UUIDPk, Base):
     page_count: Mapped[int | None] = mapped_column(Integer)
     # grade_recommendations | clinical_protocol | narrative (ARCH-038 / ARCH §6 rule 0)
     format_profile: Mapped[str | None] = mapped_column(String(24))
-    parse_quality: Mapped[float | None] = mapped_column(Float)  # 0-1; below INGEST_MIN_PARSE_QUALITY -> admin hold
+    parse_quality: Mapped[float | None] = mapped_column(
+        Float
+    )  # 0-1; below INGEST_MIN_PARSE_QUALITY -> admin hold
 
 
 class Chunk(UUIDPk, Base):
@@ -72,10 +76,13 @@ class Chunk(UUIDPk, Base):
     # prose|recommendation|protocol_step|table|figure|list|criteria (ARCH §6)
     chunk_type: Mapped[str] = mapped_column(String(16))
     text: Mapped[str] = mapped_column(Text)
-    figure_ref: Mapped[dict | None] = mapped_column(JSONB)  # chunk_type=figure: {page, bbox, image_sha256}
+    figure_ref: Mapped[dict | None] = mapped_column(
+        JSONB
+    )  # chunk_type=figure: {page, bbox, image_sha256}
     token_count: Mapped[int | None] = mapped_column(Integer)
     vector_id: Mapped[str | None] = mapped_column(String(64))  # Qdrant point id
-    # evidence grade, recommendation strength, criteria[], has_embedded_text (figures), split_group_id, topic_tags
+    # evidence grade, recommendation strength, criteria[], has_embedded_text
+    # (figures), split_group_id, topic_tags
     meta: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 

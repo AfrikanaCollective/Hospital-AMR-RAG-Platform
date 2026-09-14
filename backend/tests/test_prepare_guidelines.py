@@ -27,13 +27,26 @@ def test_manifest_example_is_valid_and_covers_required_fields() -> None:
 def test_entry_incomplete_flags_placeholders_and_missing() -> None:
     assert set(_entry_incomplete(None)) == set(REQUIRED_MANIFEST_FIELDS)
     assert "licence" in _entry_incomplete(
-        {"title": "t", "publisher": "p", "version_label": "v",
-         "effective_date": "2024-01-01", "licence": "TODO_CONFIRM (WHO)"}
+        {
+            "title": "t",
+            "publisher": "p",
+            "version_label": "v",
+            "effective_date": "2024-01-01",
+            "licence": "TODO_CONFIRM (WHO)",
+        }
     )
-    assert _entry_incomplete(
-        {"title": "t", "publisher": "p", "version_label": "v",
-         "effective_date": "2024-01-01", "licence": "CC BY-NC-SA 3.0 IGO"}
-    ) == []
+    assert (
+        _entry_incomplete(
+            {
+                "title": "t",
+                "publisher": "p",
+                "version_label": "v",
+                "effective_date": "2024-01-01",
+                "licence": "CC BY-NC-SA 3.0 IGO",
+            }
+        )
+        == []
+    )
 
 
 def test_synth_fixtures_are_not_treated_as_corpus_docs() -> None:

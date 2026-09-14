@@ -5,7 +5,9 @@ from __future__ import annotations
 from app.citations.model import verify_citation
 from app.schemas.citation import Citation
 
-CHUNK_TEXT = "The guideline recommends recording respiratory rate and oxygen saturation at presentation."
+CHUNK_TEXT = (
+    "The guideline recommends recording respiratory rate and oxygen saturation at presentation."
+)
 
 
 def _cit(quote: str, qs: int, qe: int) -> Citation:

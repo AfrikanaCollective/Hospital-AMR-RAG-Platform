@@ -1,37 +1,142 @@
 """VectorStore adapter (ARCH-002). Qdrant implementation.
 
-Guideline chunks: named vectors `dense` + `sparse`, server-side RRF fusion,
-payload filtering for access scoping (status, topic_tags, allowed_doc_ids).
+Guideline chunks: named vectors `dense` + `sparse`, server-side RRF fusion
+(Qdrant's Query API `prefetch` + `FusionQuery(fusion=Fusion.RRF)`), payload
+filtering for access scoping (status, topic_tags, allowed_doc_ids).
 If PATIENT_RECORD_VECTORS_ENABLED is ever set, record vectors go in a SEPARATE
 collection with mandatory patient_id payload filtering (ARCH-023).
 
 The adapter interface keeps a swap path open (DEVIATIONS.md #1).
+
+The `sparse` field carries `Modifier.IDF` so Qdrant applies corpus IDF at
+query time over the raw term-frequency vectors `app.retrieval.sparse` builds
+(DEVIATIONS.md #48).
+
+**RRF `k` is not client-configurable** (DEVIATIONS.md #49): Qdrant's
+server-side RRF fusion does not expose a `k` constant through the client API
+(only `fusion=Fusion.RRF` itself). `settings.rrf_k` (default 60, matching
+Qdrant's own internal constant) is therefore currently informational only —
+it documents the assumption rather than tuning behaviour. If Qdrant ever
+exposes a tunable `k`, wire it through here.
+
+`url=":memory:"` runs an embedded, in-process Qdrant (no server, no network) —
+used by tests; a real deployment always passes a `http(s)://` URL.
 """
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as qm
+
 
 class VectorStore(Protocol):
+    def ensure_collection(self, dense_dim: int) -> None: ...
     def upsert_chunks(self, points: list[dict]) -> None: ...
     def hybrid_search(
-        self, *, dense: list[float], sparse: dict, limit: int, flt: dict | None
+        self,
+        *,
+        dense: list[float],
+        sparse: dict,
+        prefetch_limit: int,
+        limit: int,
+        flt: dict | None,
     ) -> list[dict]: ...
     def get_by_ids(self, ids: list[str]) -> list[dict]: ...
+
+
+def _build_filter(flt: dict) -> qm.Filter:
+    must: list[qm.Condition] = []
+    if "status" in flt:
+        statuses = flt["status"] if isinstance(flt["status"], list) else [flt["status"]]
+        must.append(qm.FieldCondition(key="status", match=qm.MatchAny(any=statuses)))
+    if flt.get("topic_tags"):
+        must.append(qm.FieldCondition(key="topic_tags", match=qm.MatchAny(any=flt["topic_tags"])))
+    if flt.get("allowed_doc_ids"):
+        must.append(
+            qm.FieldCondition(key="document_id", match=qm.MatchAny(any=flt["allowed_doc_ids"]))
+        )
+    return qm.Filter(must=must)
 
 
 class QdrantVectorStore:
     def __init__(self, url: str, api_key: str, collection: str) -> None:
         self.url = url
-        self.api_key = api_key
         self.collection = collection
+        self._client = (
+            QdrantClient(location=":memory:")
+            if url == ":memory:"
+            else QdrantClient(url=url, api_key=api_key or None)
+        )
+
+    def ensure_collection(self, dense_dim: int) -> None:
+        """Create the collection if absent; assert dense dim otherwise
+        (ARCH §6 "Dense dimension read from the model at startup and asserted
+        against the Qdrant collection")."""
+        if self._client.collection_exists(self.collection):
+            info = self._client.get_collection(self.collection)
+            existing = info.config.params.vectors["dense"].size  # type: ignore[index]
+            if existing != dense_dim:
+                raise RuntimeError(
+                    f"Qdrant collection {self.collection!r} has dense dim {existing}, "
+                    f"but the configured embedding model produces {dense_dim}. "
+                    "Re-embed into a new collection (ARCH §6 'Re-embedding')."
+                )
+            return
+        self._client.create_collection(
+            collection_name=self.collection,
+            vectors_config={"dense": qm.VectorParams(size=dense_dim, distance=qm.Distance.COSINE)},
+            sparse_vectors_config={"sparse": qm.SparseVectorParams(modifier=qm.Modifier.IDF)},
+        )
 
     def upsert_chunks(self, points: list[dict]) -> None:
-        raise NotImplementedError("Phase 2 (ARCH-002)")
+        """Each point: {id, dense: [...], sparse: {indices, values}, payload: {...}}."""
+        qpoints = [
+            qm.PointStruct(
+                id=p["id"],
+                vector={
+                    "dense": p["dense"],
+                    "sparse": qm.SparseVector(
+                        indices=p["sparse"]["indices"], values=p["sparse"]["values"]
+                    ),
+                },
+                payload=p["payload"],
+            )
+            for p in points
+        ]
+        self._client.upsert(collection_name=self.collection, points=qpoints)
 
-    def hybrid_search(self, *, dense, sparse, limit, flt=None):  # type: ignore[no-untyped-def]
-        raise NotImplementedError("Phase 2 (ARCH §7.2-7.3)")
+    def hybrid_search(
+        self,
+        *,
+        dense: list[float],
+        sparse: dict,
+        prefetch_limit: int,
+        limit: int,
+        flt: dict | None = None,
+    ) -> list[dict]:
+        """`prefetch_limit` (ARCH §7 step 2, `CANDIDATE_K`) bounds each of the
+        dense/sparse candidate lists before fusion; `limit` (ARCH §7 step 3,
+        `FUSED_K`) bounds the fused result."""
+        qfilter = _build_filter(flt) if flt else None
+        result = self._client.query_points(
+            collection_name=self.collection,
+            prefetch=[
+                qm.Prefetch(query=dense, using="dense", limit=prefetch_limit, filter=qfilter),
+                qm.Prefetch(
+                    query=qm.SparseVector(indices=sparse["indices"], values=sparse["values"]),
+                    using="sparse",
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                ),
+            ],
+            query=qm.FusionQuery(fusion=qm.Fusion.RRF),
+            limit=limit,
+            with_payload=True,
+        )
+        return [{"id": str(pt.id), "score": pt.score, **(pt.payload or {})} for pt in result.points]
 
     def get_by_ids(self, ids: list[str]) -> list[dict]:
-        raise NotImplementedError("Phase 2")
+        records = self._client.retrieve(collection_name=self.collection, ids=ids, with_payload=True)
+        return [{"id": str(r.id), **(r.payload or {})} for r in records]

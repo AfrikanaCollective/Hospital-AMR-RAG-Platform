@@ -23,7 +23,9 @@ def test_answer_path_refuses_placeholder() -> None:
 
 
 def test_answer_path_allows_real_id() -> None:
-    _s(model_id="gw-model-x", model_id_verified=True).validate_model_config(require_answer_path=True)
+    _s(model_id="gw-model-x", model_id_verified=True).validate_model_config(
+        require_answer_path=True
+    )
 
 
 def test_startup_does_not_raise_on_placeholder() -> None:
@@ -39,3 +41,31 @@ def test_no_model_name_literals_in_gateway_source() -> None:
     # the gateway must not hardcode a model id
     for banned in ("gpt-", "claude-", "llama-", "mistral-", "gemini-"):
         assert banned not in text.lower()
+
+
+def test_gateway_transport_warns_on_plaintext_external_host(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _s(llm_gateway_url="http://gateway.example.com:8080").validate_gateway_transport()
+    assert any("https" in r.message for r in caplog.records)
+
+
+def test_gateway_transport_silent_for_known_internal_hosts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _s(llm_gateway_url="http://llm-gateway:8080").validate_gateway_transport()
+    assert caplog.records == []
+
+
+def test_gateway_transport_silent_for_https(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        _s(llm_gateway_url="https://gateway.example.com").validate_gateway_transport()
+    assert caplog.records == []

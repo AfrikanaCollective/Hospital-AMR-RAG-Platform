@@ -24,13 +24,15 @@ class AuthProvider(Protocol):
 
 
 def get_auth_provider() -> AuthProvider:
+    # Deferred (not both providers' deps need to be present in every
+    # deployment; only the configured one is ever imported).
     name = get_settings().auth_provider
     if name == "devjwt":
-        from app.auth.devjwt import DevJwtProvider
+        from app.auth.devjwt import DevJwtProvider  # noqa: PLC0415
 
         return DevJwtProvider()
     if name == "oidc":
-        from app.auth.oidc import OidcProvider
+        from app.auth.oidc import OidcProvider  # noqa: PLC0415
 
         return OidcProvider()
     raise ValueError(f"unknown AUTH_PROVIDER: {name!r}")

@@ -12,7 +12,7 @@ from app.schemas.record import DEIDENTIFIED_PROVENANCE
 REPO = Path(__file__).resolve().parents[2]
 REAL_DIR = REPO / "data/patient_records/deidentified/newborn_nbu_2021"
 
-TINY_CSV = '''"key","field_name","field_value","context"
+TINY_CSV = """"key","field_name","field_value","context"
 7,"age_days","2","demographics"
 7,"birth_weight","1.2","demographics"
 7,"gestational_age","28","demographics"
@@ -31,7 +31,7 @@ TINY_CSV = '''"key","field_name","field_value","context"
 7,"penicillin","FALSE","medication"
 8,"age_days","0","demographics"
 8,"sex","Female","demographics"
-'''
+"""
 
 TINY_MAPPING = """
 dataset_id: tiny
@@ -118,7 +118,10 @@ def test_list_families_preserve_present_absent(tiny: tuple[Path, MappingSpec]) -
     findings = {f["name"]: f["present"] for f in d["examination_findings"]}
     assert findings == {"apnoea": True, "grunting": False}
     assert [m["name"] for m in d["medications"]] == ["gentamicin", "penicillin"]
-    assert {m["name"]: m["active"] for m in d["medications"]} == {"gentamicin": True, "penicillin": False}
+    assert {m["name"]: m["active"] for m in d["medications"]} == {
+        "gentamicin": True,
+        "penicillin": False,
+    }
     assert d["interventions"] == [
         {"name": "oxygen", "active": True, "started_at": d["interventions"][0]["started_at"]}
     ]
@@ -151,8 +154,10 @@ def test_medication_and_intervention_started_at_equals_admitted_at(
         assert iv.stopped_at is None
 
 
-@pytest.mark.skipif(not (REAL_DIR / "rag_dataset.csv").exists(),
-                    reason="real de-identified dataset not present (expected in CI)")
+@pytest.mark.skipif(
+    not (REAL_DIR / "rag_dataset.csv").exists(),
+    reason="real de-identified dataset not present (expected in CI)",
+)
 def test_real_dataset_maps_cleanly() -> None:
     spec = MappingSpec.from_yaml(REAL_DIR / "field_mapping.yaml")
     recs = list(build_records(REAL_DIR / "rag_dataset.csv", spec, limit=50))

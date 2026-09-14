@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 from app.schemas.enums import ExpectedOutcome
 
+_COMPOSITION_TOTAL_PERCENT = 100
+_HARD_FRACTION_CAP_PERCENT = 50  # PRD-065 / DEVIATIONS.md #9
+
 
 @dataclass(frozen=True)
 class Composition:
@@ -19,12 +22,12 @@ class Composition:
     no_guideline_expected: int
 
     @classmethod
-    def parse(cls, spec: str) -> "Composition":
+    def parse(cls, spec: str) -> Composition:
         a, b, c = (int(x) for x in spec.split(","))
-        if a + b + c != 100:
+        if a + b + c != _COMPOSITION_TOTAL_PERCENT:
             raise ValueError("composition percentages must sum to 100")
         comp = cls(a, b, c)
-        if comp.hard_fraction > 50:
+        if comp.hard_fraction > _HARD_FRACTION_CAP_PERCENT:
             raise ValueError(
                 f"hard cases (missing_info + no_guideline) = {comp.hard_fraction}% exceeds the "
                 "50% cap (PRD-065 / DEVIATIONS.md #9)"

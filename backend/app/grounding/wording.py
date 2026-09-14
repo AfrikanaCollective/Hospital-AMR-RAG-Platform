@@ -6,8 +6,9 @@ Second line of defense behind the prompt templates. Blocks:
 - text that reads as a next-step plan for a specific patient.
 A trip => safety_filter escalation. Safe to extend the marker lists.
 
-Phase 3 wires this into the verifier; the marker lists here are usable now and
-are covered by tests.
+The marker lists here are usable now and are covered by tests. Phase 3 adds
+the dosing/therapy-beyond-source check and wires this into the verifier
+(`app.grounding.verifier.verify`).
 """
 
 from __future__ import annotations
@@ -27,9 +28,28 @@ DIRECTIVE_PATTERNS: tuple[str, ...] = (
 
 _COMPILED = [re.compile(p, re.IGNORECASE) for p in DIRECTIVE_PATTERNS]
 
+# A dose/frequency-shaped numeric token: "5mg", "2.5 ml/kg", "10 units", "8 hourly".
+_DOSING_TOKEN_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s?(?:mg|mcg|g|ml|l|units?|iu|mmol|mcg/kg|mg/kg|ml/kg)\b"
+    r"(?:\s?(?:/\s?kg|/\s?day|/\s?dose))?",
+    re.IGNORECASE,
+)
+
 
 def has_directive_phrasing(text: str) -> bool:
     return any(p.search(text) for p in _COMPILED)
+
+
+def _dosing_beyond_source(text: str, cited_quotes: list[str]) -> bool:
+    """A dosing/frequency figure in `text` that does not appear verbatim in
+    any cited quote is a fabricated specific — even if it happens to be
+    clinically plausible, it isn't in the retrieved source (ARCH §8.3 step 4).
+    """
+    tokens = {m.group(0).strip().lower() for m in _DOSING_TOKEN_RE.finditer(text)}
+    if not tokens:
+        return False
+    quote_text = " ".join(cited_quotes).lower()
+    return any(token not in quote_text for token in tokens)
 
 
 def scan_segment(text: str, *, cited_quotes: list[str]) -> list[str]:
@@ -37,5 +57,6 @@ def scan_segment(text: str, *, cited_quotes: list[str]) -> list[str]:
     reasons: list[str] = []
     if has_directive_phrasing(text):
         reasons.append("directive_phrasing")
-    # dosing/therapy-beyond-source and patient-specific-plan checks: Phase 3.
+    if _dosing_beyond_source(text, cited_quotes):
+        reasons.append("dosing_beyond_source")
     return reasons

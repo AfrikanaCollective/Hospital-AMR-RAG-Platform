@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, LargeBinary, String
+from sqlalchemy import BigInteger, DateTime, LargeBinary, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +25,7 @@ class AuditEvent(Base):
     __table_args__ = {"schema": SCHEMA}
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    ts: Mapped[datetime] = mapped_column()
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     actor_id: Mapped[uuid.UUID | None] = mapped_column()
     actor_role: Mapped[str | None] = mapped_column(String(32))
     purpose: Mapped[str | None] = mapped_column(String(64))
@@ -42,7 +42,9 @@ class AuditEvent(Base):
     response_hash: Mapped[str | None] = mapped_column(String(64))
     response_text_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     grounding_summary: Mapped[dict | None] = mapped_column(JSONB)
-    outcome: Mapped[str | None] = mapped_column(String(24))  # answered|escalated|no_guideline|denied
+    outcome: Mapped[str | None] = mapped_column(
+        String(24)
+    )  # answered|escalated|no_guideline|denied
     prev_hash: Mapped[str] = mapped_column(String(64))
     row_hash: Mapped[str] = mapped_column(String(64))
     detail: Mapped[dict | None] = mapped_column(JSONB)
