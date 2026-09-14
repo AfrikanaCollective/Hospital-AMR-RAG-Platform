@@ -89,12 +89,19 @@ format/DDL-privilege/target-schema all needed fixes — see `DEVIATIONS.md`
 `AUTH_PROVIDER=devjwt`, so it cannot exist in a real deployment), and
 `current_principal` now requires and verifies a real `Authorization: Bearer`
 token (no more permissive no-auth dev fallback) — see `DEVIATIONS.md` #86.
-Still outstanding for Phase 4: `record_field_policy` RBAC enforcement
-(`resolve_field_effect`), RLS GUC wiring from the caller's principal, the
+The `record_field_policy(role, purpose, field_path) -> allow|deny|mask`
+data-layer gate is now implemented (`app.auth.rbac.resolve_field_effects`,
+fail-closed deny with an exact-match + `(role, purpose, "*")` wildcard
+resolution order) and wired into `app.records.access.get_patient_fields`
+(`mask` substitutes a placeholder rather than the real value; `deny` omits
+the field; every read's audit event records the denied/masked subsets) —
+verified against a real ephemeral Postgres, not just offline mocks — see
+`DEVIATIONS.md` #87. Still outstanding for Phase 4: RLS GUC wiring from the
+caller's principal, seeding real default `record_field_policy` rows, the
 remaining `records`/`corpus`/`admin` route implementations, an "answer"
 audit-event gap, Celery-based async handling for long agent runs, and an
 end-to-end `docker compose up` verification pass.
-**408 passing offline tests** as of the last update.
+**417 passing offline tests** as of the last update.
 
 ### Repository layout
 

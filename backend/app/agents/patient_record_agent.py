@@ -9,9 +9,16 @@ Access: records schema for the ONE patient_id, filtered by
 record_field_policy(role, purpose). The only agent with PHI field access.
 Tools: list_record_fields (names only), get_patient_fields(patient_id, paths, purpose).
 
-Field-level policy scope: see app.records.access module docstring
-(DEVIATIONS.md #70) — Phase 3 enforces minimization + full audit coverage,
-not yet the DB-backed (role, purpose, field) policy table (Phase 4).
+Field-level policy: see `app.records.access` module docstring (DEVIATIONS.md
+#70, #87) — `get_patient_fields` now gates every field through the DB-backed
+`record_field_policy(role, purpose, field)` table. `_select_actor_role`
+(DEVIATIONS.md #87) picks `"clinician"` when the principal holds it (this
+agent's access is clinical-care field access; `/query` already requires the
+`clinician` role — `ROUTE_PERMISSIONS["query:submit"]`), falling back to the
+lexicographically-first role otherwise — never `state["roles"][0]` directly,
+since `Principal.roles` is a `frozenset` and its iteration order is
+per-process hash-dependent, not a meaningful priority; that ambiguity was
+harmless while `actor_role` was audit-log-only, but is now access-determining.
 
 `state["required_field_paths"]`, when set by the orchestrator from a matched
 guideline's criteria (SCOPE-2.1) or from the missing-info agent's own
@@ -36,6 +43,18 @@ _LIST_FIELDS_FN = list_record_fields
 _GET_FIELDS_FN = get_patient_fields
 
 
+def _select_actor_role(roles: list[str] | None) -> str | None:
+    """Deterministic role choice for field-policy gating (DEVIATIONS.md #87)
+    — prefer `clinician` (this agent's own access purpose) when the
+    principal holds it; otherwise the lexicographically-first role, never an
+    arbitrary `frozenset` iteration order."""
+    if not roles:
+        return None
+    if "clinician" in roles:
+        return "clinician"
+    return sorted(roles)[0]
+
+
 def run(state: GraphState) -> GraphState:
     patient_id_raw = state.get("patient_id")
     if not patient_id_raw:
@@ -46,8 +65,7 @@ def run(state: GraphState) -> GraphState:
         return state
     patient_id = uuid.UUID(patient_id_raw)
 
-    roles = state.get("roles")
-    actor_role = roles[0] if roles else None
+    actor_role = _select_actor_role(state.get("roles"))
     with _SESSION_SCOPE() as session:
         try:
             wanted = state.get("required_field_paths") or _LIST_FIELDS_FN(session, patient_id)

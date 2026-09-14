@@ -62,10 +62,15 @@ def test_extract_features_uses_latest_vitals() -> None:
     assert "given_name" not in features  # identity fields excluded
 
 
+def _allow_all(session, role, purpose, field_paths):  # noqa: ANN001, ARG001
+    return dict.fromkeys(field_paths, "allow")
+
+
 def test_get_patient_fields_returns_only_requested_and_audits(monkeypatch) -> None:  # noqa: ANN001
     row = _make_record_row()
     monkeypatch.setattr(access, "_find_latest_patient_record", lambda session, pid: row)
     monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
+    monkeypatch.setattr(access, "_RESOLVE_FIELD_EFFECTS_FN", _allow_all)
     session = _FakeSession()
 
     result = access.get_patient_fields(
@@ -73,6 +78,7 @@ def test_get_patient_fields_returns_only_requested_and_audits(monkeypatch) -> No
         PATIENT_ID,
         ["vitals.heart_rate_bpm", "encounter.gestational_age_weeks"],
         purpose="clinical_care",
+        actor_role="clinician",
     )
     assert result == {"vitals.heart_rate_bpm": 170.0, "encounter.gestational_age_weeks": 32.0}
     assert len(session.added) == 1
@@ -80,22 +86,95 @@ def test_get_patient_fields_returns_only_requested_and_audits(monkeypatch) -> No
     assert audit_event.action == "record_access"
     assert audit_event.record_fields == ["vitals.heart_rate_bpm", "encounter.gestational_age_weeks"]
     assert audit_event.patient_id == PATIENT_ID
+    assert audit_event.detail is None
 
 
 def test_get_patient_fields_never_returns_identity_fields(monkeypatch) -> None:  # noqa: ANN001
     row = _make_record_row()
     monkeypatch.setattr(access, "_find_latest_patient_record", lambda session, pid: row)
     monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
+    monkeypatch.setattr(access, "_RESOLVE_FIELD_EFFECTS_FN", _allow_all)
 
     result = access.get_patient_fields(
         _FakeSession(),
         PATIENT_ID,
         ["given_name", "mrn", "vitals.heart_rate_bpm"],
         purpose="clinical_care",
+        actor_role="clinician",
     )
     assert "given_name" not in result
     assert "mrn" not in result
     assert result == {"vitals.heart_rate_bpm": 170.0}
+
+
+def test_get_patient_fields_denies_per_policy(monkeypatch) -> None:  # noqa: ANN001
+    row = _make_record_row()
+    monkeypatch.setattr(access, "_find_latest_patient_record", lambda session, pid: row)
+    monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
+    monkeypatch.setattr(
+        access,
+        "_RESOLVE_FIELD_EFFECTS_FN",
+        lambda session, role, purpose, paths: {  # noqa: ARG005
+            "vitals.heart_rate_bpm": "deny",
+            "encounter.gestational_age_weeks": "allow",
+        },
+    )
+    session = _FakeSession()
+
+    result = access.get_patient_fields(
+        session,
+        PATIENT_ID,
+        ["vitals.heart_rate_bpm", "encounter.gestational_age_weeks"],
+        purpose="clinical_care",
+        actor_role="reviewer",
+    )
+    assert result == {"encounter.gestational_age_weeks": 32.0}
+    audit_event = session.added[0]
+    assert audit_event.detail == {
+        "denied_fields": ["vitals.heart_rate_bpm"],
+        "masked_fields": [],
+    }
+
+
+def test_get_patient_fields_masks_per_policy(monkeypatch) -> None:  # noqa: ANN001
+    row = _make_record_row()
+    monkeypatch.setattr(access, "_find_latest_patient_record", lambda session, pid: row)
+    monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
+    monkeypatch.setattr(
+        access,
+        "_RESOLVE_FIELD_EFFECTS_FN",
+        lambda session, role, purpose, paths: dict.fromkeys(paths, "mask"),  # noqa: ARG005
+    )
+    session = _FakeSession()
+
+    result = access.get_patient_fields(
+        session,
+        PATIENT_ID,
+        ["vitals.heart_rate_bpm"],
+        purpose="clinical_care",
+        actor_role="clinician",
+    )
+    assert result == {"vitals.heart_rate_bpm": access._MASKED_PLACEHOLDER}
+    audit_event = session.added[0]
+    assert audit_event.detail == {"denied_fields": [], "masked_fields": ["vitals.heart_rate_bpm"]}
+
+
+def test_get_patient_fields_defaults_to_deny_for_unresolved_field(monkeypatch) -> None:  # noqa: ANN001
+    """Belt-and-braces: even if `_RESOLVE_FIELD_EFFECTS_FN` omits a field from
+    its result dict, `get_patient_fields` must not treat that as `allow`."""
+    row = _make_record_row()
+    monkeypatch.setattr(access, "_find_latest_patient_record", lambda session, pid: row)
+    monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
+    monkeypatch.setattr(access, "_RESOLVE_FIELD_EFFECTS_FN", lambda *a, **k: {})  # noqa: ARG005
+
+    result = access.get_patient_fields(
+        _FakeSession(),
+        PATIENT_ID,
+        ["vitals.heart_rate_bpm"],
+        purpose="clinical_care",
+        actor_role="clinician",
+    )
+    assert result == {}
 
 
 def test_list_record_fields_uses_field_index_only(monkeypatch) -> None:  # noqa: ANN001

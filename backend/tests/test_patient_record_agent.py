@@ -57,6 +57,35 @@ def test_falls_back_to_all_available_fields_when_none_required(monkeypatch) -> N
     assert out["patient_features"] == {"a": 1, "b": 1}
 
 
+def test_select_actor_role_prefers_clinician_over_other_roles() -> None:
+    assert pra._select_actor_role(["reviewer", "clinician"]) == "clinician"
+    assert pra._select_actor_role(["clinician"]) == "clinician"
+
+
+def test_select_actor_role_falls_back_to_sorted_first_role() -> None:
+    assert pra._select_actor_role(["reviewer", "admin"]) == "admin"
+
+
+def test_select_actor_role_none_when_no_roles() -> None:
+    assert pra._select_actor_role(None) is None
+    assert pra._select_actor_role([]) is None
+
+
+def test_actor_role_threaded_into_get_patient_fields(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(pra, "_SESSION_SCOPE", _fake_session_scope)
+    monkeypatch.setattr(pra, "_LIST_FIELDS_FN", lambda session, pid: ["a"])  # noqa: ARG005
+    captured = {}
+
+    def _fake_get_fields(session, patient_id, paths, **kwargs):  # noqa: ANN001, ARG001
+        captured["actor_role"] = kwargs.get("actor_role")
+        return dict.fromkeys(paths, 1)
+
+    monkeypatch.setattr(pra, "_GET_FIELDS_FN", _fake_get_fields)
+    state = {"query": "x", "patient_id": PATIENT_ID, "roles": ["reviewer", "clinician"]}
+    pra.run(state)  # type: ignore[arg-type]
+    assert captured["actor_role"] == "clinician"
+
+
 def test_missing_patient_record_escalates(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(pra, "_SESSION_SCOPE", _fake_session_scope)
     monkeypatch.setattr(pra, "_LIST_FIELDS_FN", lambda session, pid: [])  # noqa: ARG005
