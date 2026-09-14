@@ -18,6 +18,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+import app.audit.log as audit_log
 import app.ingestion.documents as documents_mod
 import app.ingestion.records as records_mod
 from app.api.deps import Principal, current_principal, get_db
@@ -55,6 +56,11 @@ def _isolated_settings(tmp_path, monkeypatch: pytest.MonkeyPatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_audit_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audit_log, "_fetch_last_row_hash", lambda session: None)
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +128,7 @@ def test_ingest_document_requires_admin_role(anonymous_client: TestClient) -> No
 
 
 def test_ingest_document_success(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path, fake_session: _FakeSession
 ) -> None:
     calls = []
     monkeypatch.setattr(
@@ -146,6 +152,14 @@ def test_ingest_document_success(
     assert body["version_status"] == "active"
     assert len(calls) == 1
     assert (get_settings().sample_guidelines_dir + "/guideline.md").endswith("guideline.md")
+
+    audit_events = [
+        obj for obj in fake_session.added if getattr(obj, "action", None) == "ingestion"
+    ]
+    assert len(audit_events) == 1
+    assert audit_events[0].actor_role == "admin"
+    assert audit_events[0].outcome == "created"
+    assert audit_events[0].detail["kind"] == "document"
 
 
 def test_ingest_document_rejects_unsupported_extension(client: TestClient) -> None:
@@ -329,7 +343,7 @@ def test_ingest_records_eav_deidentified_requires_attestation(client: TestClient
 # ── POST /ingest/records (API/service) ───────────────────────────────────────
 
 
-def test_ingest_records_api_success(client: TestClient) -> None:
+def test_ingest_records_api_success(client: TestClient, fake_session: _FakeSession) -> None:
     resp = client.post(
         "/api/ingest/records",
         json={
@@ -339,6 +353,19 @@ def test_ingest_records_api_success(client: TestClient) -> None:
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["count"] == 1
+
+    audit_events = [
+        obj for obj in fake_session.added if getattr(obj, "action", None) == "ingestion"
+    ]
+    assert len(audit_events) == 1
+    assert audit_events[0].actor_role == "service"
+    assert audit_events[0].detail == {
+        "kind": "records",
+        "source": "api",
+        "data_class": "synthetic",
+        "dataset_id": None,
+        "count": 1,
+    }
 
 
 def test_ingest_records_api_batch_too_large_is_413(client: TestClient) -> None:

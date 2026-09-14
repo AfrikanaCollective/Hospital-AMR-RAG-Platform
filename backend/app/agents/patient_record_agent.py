@@ -20,6 +20,12 @@ since `Principal.roles` is a `frozenset` and its iteration order is
 per-process hash-dependent, not a meaningful priority; that ambiguity was
 harmless while `actor_role` was audit-log-only, but is now access-determining.
 
+Opens its own session scoped to `patient_id` (`_SESSION_SCOPE(patient_scope=...)`,
+DEVIATIONS.md #88) — the Postgres row-level-security GUC that restricts
+`records.patient`/`records.patient_record`/`memory.patient_context` reads to
+this one patient for the lifetime of the session, defense-in-depth beneath
+the `record_field_policy` gate above.
+
 `state["required_field_paths"]`, when set by the orchestrator from a matched
 guideline's criteria (SCOPE-2.1) or from the missing-info agent's own
 required-field derivation (SCOPE-2.2), narrows what is fetched. When absent,
@@ -66,7 +72,7 @@ def run(state: GraphState) -> GraphState:
     patient_id = uuid.UUID(patient_id_raw)
 
     actor_role = _select_actor_role(state.get("roles"))
-    with _SESSION_SCOPE() as session:
+    with _SESSION_SCOPE(patient_scope=str(patient_id)) as session:
         try:
             wanted = state.get("required_field_paths") or _LIST_FIELDS_FN(session, patient_id)
             features = _GET_FIELDS_FN(

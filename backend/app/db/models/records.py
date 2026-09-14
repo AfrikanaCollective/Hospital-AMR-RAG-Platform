@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, String
+from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -63,10 +63,23 @@ class PatientRecord(UUIDPk, Base):
 
 
 class RecordFieldPolicy(Base):
-    """(role, purpose, field_path) -> allow | deny | mask (ARCH §4.2, ARCH-034)."""
+    """(role, purpose, field_path) -> allow | deny | mask (ARCH §4.2, ARCH-034).
+
+    `field_path` may be the literal `"*"` (`app.auth.rbac.WILDCARD_FIELD_PATH`)
+    — a fallback applied to any field without its own exact-match row
+    (DEVIATIONS.md #87). One row per `(role, purpose, field_path)`: the unique
+    constraint both lets seeding use a real upsert and rules out the
+    ambiguous-duplicate-row case `resolve_field_effects` couldn't otherwise
+    resolve deterministically (DEVIATIONS.md #87, #88).
+    """
 
     __tablename__ = "record_field_policy"
-    __table_args__ = {"schema": SCHEMA}
+    __table_args__ = (
+        UniqueConstraint(
+            "role", "purpose", "field_path", name="uq_record_field_policy_role_purpose_field"
+        ),
+        {"schema": SCHEMA},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     role: Mapped[str] = mapped_column(String(32))

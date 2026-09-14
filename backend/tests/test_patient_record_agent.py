@@ -13,7 +13,7 @@ PATIENT_ID = str(uuid.uuid4())
 
 
 @contextmanager
-def _fake_session_scope():
+def _fake_session_scope(patient_scope: str | None = None):
     yield None
 
 
@@ -84,6 +84,25 @@ def test_actor_role_threaded_into_get_patient_fields(monkeypatch) -> None:  # no
     state = {"query": "x", "patient_id": PATIENT_ID, "roles": ["reviewer", "clinician"]}
     pra.run(state)  # type: ignore[arg-type]
     assert captured["actor_role"] == "clinician"
+
+
+def test_session_scoped_to_patient_id(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+
+    @contextmanager
+    def _capturing_session_scope(patient_scope: str | None = None):
+        captured["patient_scope"] = patient_scope
+        yield None
+
+    monkeypatch.setattr(pra, "_SESSION_SCOPE", _capturing_session_scope)
+    monkeypatch.setattr(pra, "_LIST_FIELDS_FN", lambda session, pid: ["a"])  # noqa: ARG005
+    monkeypatch.setattr(
+        pra,
+        "_GET_FIELDS_FN",
+        lambda session, patient_id, paths, **kwargs: {},  # noqa: ARG005
+    )
+    pra.run({"query": "x", "patient_id": PATIENT_ID})  # type: ignore[arg-type]
+    assert captured["patient_scope"] == PATIENT_ID
 
 
 def test_missing_patient_record_escalates(monkeypatch) -> None:  # noqa: ANN001

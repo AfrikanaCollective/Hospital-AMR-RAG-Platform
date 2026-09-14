@@ -7,6 +7,13 @@ Does NOT: recommend; guess values; proceed without the info.
 Access: records.field_index (names), authorized field values, Qdrant (matched guideline).
 Tools: list_record_fields, get_patient_fields, get_chunk, emit_missing_info.
 
+Opens its own session scoped to `patient_id` (`_SESSION_SCOPE(patient_scope=...)`,
+DEVIATIONS.md #88) — the row-level-security GUC restricting `records.*`/
+`memory.patient_context` reads to this one patient — even though this agent's
+own DB access (`get_record_field_index`) never decrypts PHI; the corpus
+retrieval this agent also runs on the same session is unaffected (it isn't a
+patient-scoped table).
+
 Required fields come from the same retrieved `criteria` chunks the
 stage-classifier uses (ARCH §6 rule 4): each criterion's `field` maps onto a
 patient-feature path via `app.records.criteria.map_criterion_field`
@@ -63,7 +70,7 @@ def run(state: GraphState) -> GraphState:
         return state
     patient_id = uuid.UUID(patient_id_raw)
 
-    with _SESSION_SCOPE() as session:
+    with _SESSION_SCOPE(patient_scope=str(patient_id)) as session:
         items, snapshot = _RETRIEVE_FN(state["query"], session=session)
         try:
             field_index = _FIELD_INDEX_FN(session, patient_id)

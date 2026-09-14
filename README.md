@@ -26,7 +26,7 @@ evaluation workflow.
 | **1** | Agent instructions & scaffolding | ✅ complete (Checkpoint 1 approved 2026-09-12) |
 | **2** | Ingestion & hybrid retrieval core | ✅ complete (Checkpoint 2 approved 2026-09-14) |
 | **3** | Multi-agent orchestration & HITL | ✅ complete (Checkpoint 3 approved 2026-09-14) |
-| 4 | API & backend hardening | 🔄 in progress — auth foundation done, RBAC/RLS/routes/audit/async/Docker remain |
+| 4 | API & backend hardening | 🔄 checklist complete, **Checkpoint 4 pending operator review** |
 | 5 | React frontend | ⬜ not started |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
@@ -96,12 +96,70 @@ resolution order) and wired into `app.records.access.get_patient_fields`
 (`mask` substitutes a placeholder rather than the real value; `deny` omits
 the field; every read's audit event records the denied/masked subsets) —
 verified against a real ephemeral Postgres, not just offline mocks — see
-`DEVIATIONS.md` #87. Still outstanding for Phase 4: RLS GUC wiring from the
-caller's principal, seeding real default `record_field_policy` rows, the
-remaining `records`/`corpus`/`admin` route implementations, an "answer"
-audit-event gap, Celery-based async handling for long agent runs, and an
-end-to-end `docker compose up` verification pass.
-**417 passing offline tests** as of the last update.
+`DEVIATIONS.md` #87. RLS is now scoped per patient (`session_scope(patient_scope=...)`)
+at the two agent nodes that actually read PHI (`patient_record_agent`,
+`missing_info_agent`); `record_field_policy` gained a real unique constraint
+(migration `e6bd710e1911`) and default seed rows (`scripts/seed_db.py`) — see
+`DEVIATIONS.md` #88. `GET /records/{patient_id}/fields` and `GET
+/records/{patient_id}` are now implemented (`clinician`-only,
+`record_field_policy`-gated, RLS-scoped to the path `patient_id` via a new
+`get_patient_scoped_db` dependency) — see `DEVIATIONS.md` #89. `/corpus/*`
+(`GET /documents`, `GET /documents/{id}/versions`, `GET /chunks/{chunk_id}`,
+`POST /versions/{id}/withdraw`) is now implemented too — reads open to any
+authenticated role, withdrawal admin-only, a withdrawn version's chunks still
+resolve (ARCH §5.1's "citations still resolve" guarantee, verified against a
+real Postgres) — see `DEVIATIONS.md` #90, which also flags a broader gap
+noticed along the way: the per-agent tool allow-list (`app.agents.registry`)
+is never actually invoked by the live agent graph, only by its own tests.
+`POST /query` now writes real `query`/`answer` audit events (the latter with
+`model_id`, `response_hash`, and `grounding_summary` — `model_id` is newly
+threaded through `GraphState` from the synthesis agent's real LLM-gateway
+call), and was found to be missing its documented `clinician`-only
+restriction (any authenticated role could submit a query) — now fixed to
+`require_role("clinician")` — see `DEVIATIONS.md` #91. All four `/ingest/*`
+routes now write `action="ingestion"` audit events too (`DEVIATIONS.md` #92)
+— **every ARCH §18 audit action category now has a real writer**
+(`query`/`retrieval`/`record_access`/`answer`/`hitl_action`/`ingestion`/
+`config_change`/`login`). `GET /admin/audit` now surfaces them
+(`action`/`patient_id`/`actor_id` filters, an on-demand `verify=true`
+hash-chain check) — see `DEVIATIONS.md` #93. `POST /query/async` +
+`GET /query/jobs/{job_id}` now give long-running agent runs a real
+Celery-backed path (`app.agents.tasks.run_query`) — additive; the existing
+synchronous `POST /query` (PRD-NFR-1's soft ~15s p50 target) is unchanged —
+verified end-to-end against a real Redis broker, a real separate Celery
+worker process, and real Postgres persistence, not just offline mocks — see
+`DEVIATIONS.md` #94.
+
+A full end-to-end `docker compose --profile dev up` verification pass (real
+proxy/api/worker/postgres/redis/qdrant/llm-gateway, not just config
+inspection or isolated real-Postgres scripts) found and fixed **six real
+bugs**: nginx's `/api/` proxy silently stripped the prefix FastAPI expects
+(every request 404'd); `POST /ingest/documents` uploads were invisible to
+`worker` (no shared volume between the two containers); the resulting bind
+mount then hit a host/container UID permission mismatch; the LangGraph
+checkpointer's lazy first-request setup (`CREATE INDEX CONCURRENTLY`)
+self-deadlocked against that same request's own open transaction — fixed by
+warming it eagerly at FastAPI startup instead; the audit hash-chain had a
+real concurrency race between two sessions writing audit rows for one
+logical request (`SELECT ... FOR UPDATE` was tried and confirmed *not* to
+fix it; a Postgres advisory lock does); and fixing the race then exposed a
+second deadlock from `POST /query` holding one transaction open across the
+whole graph invocation, fixed by moving the route off `Depends(get_db)`
+entirely, to two short-lived, explicitly-scoped sessions. All six verified
+fixed with real concurrent requests against the live stack afterward — see
+`DEVIATIONS.md` #95 for the full account, including what was confirmed
+working unmodified (TLS termination, migrate, seed, full ingestion pipeline,
+`POST /query`/`/query/async`, `GET /admin/audit`).
+
+**Phase 4's checklist is now complete.** Still outstanding, not blocking
+Checkpoint 4 but worth carrying forward: wiring `memory.patient_context`
+writes into the live agent graph (implemented and tested since Phase 3, never
+actually called — DEVIATIONS #88); the per-agent tool allow-list
+(`app.agents.registry`) is never invoked by the live graph, only by its own
+tests (DEVIATIONS #90); a durable fix for the `data/` bind-mount permission
+mismatch (currently a manual `chmod`, not a documented setup step or
+automated) (DEVIATIONS #95).
+**465 passing offline tests** as of the last update.
 
 ### Repository layout
 

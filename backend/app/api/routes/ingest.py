@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import tempfile
+import uuid
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -37,7 +38,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_role
+from app.api.deps import Principal, get_db, principal_uuid, require_role
+from app.audit.log import write_event
 from app.config import get_settings
 from app.ingestion.documents import DocumentMetadata, create_or_supersede_document_version
 from app.ingestion.records import (
@@ -58,6 +60,17 @@ router = APIRouter()
 # ARCH §5.2 "one record (or bounded batch) via API" — a deliberate bound, not
 # a general pagination limit; a larger push belongs on the file/EAV paths.
 _MAX_API_BATCH_RECORDS = 500
+
+
+def _select_actor_role(roles: frozenset[str], *preferred: str) -> str | None:
+    """Deterministic role choice for the `ingestion` audit event (DEVIATIONS.md
+    #92) — same reasoning as `patient_record_agent._select_actor_role`: a
+    `frozenset`'s iteration order isn't a meaningful priority, and several of
+    these routes admit more than one role (`admin` or `service`)."""
+    for p in preferred:
+        if p in roles:
+            return p
+    return sorted(roles)[0] if roles else None
 
 
 def _store_uploaded_document(content: bytes, filename: str, content_sha256: str) -> Path:
@@ -98,6 +111,8 @@ def _guarded_ingest(
     dataset_id: str | None,
     attestation: DatasetAttestation | None,
     source: str,
+    actor_id: uuid.UUID | None = None,
+    actor_role: str | None = None,
 ) -> RecordIngestResponse:
     try:
         ids = ingest_records(
@@ -110,18 +125,29 @@ def _guarded_ingest(
         )
     except (MissingAttestationError, RealDataSuspectedError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    data_class = str(resolve_data_class(declared_provenance))
+    write_event(
+        session,
+        action="ingestion",
+        actor_id=actor_id,
+        actor_role=actor_role,
+        outcome="ingested",
+        detail={
+            "kind": "records",
+            "source": source,
+            "data_class": data_class,
+            "dataset_id": dataset_id,
+            "count": len(ids),
+        },
+    )
     return RecordIngestResponse(
         patient_record_ids=[str(i) for i in ids],
-        data_class=str(resolve_data_class(declared_provenance)),
+        data_class=data_class,
         count=len(ids),
     )
 
 
-@router.post(
-    "/documents",
-    response_model=DocumentIngestResponse,
-    dependencies=[Depends(require_role("admin"))],
-)
+@router.post("/documents", response_model=DocumentIngestResponse)
 async def ingest_document(  # noqa: PLR0917 - FastAPI Form/Depends params, never called positionally
     file: UploadFile,
     title: Annotated[str, Form()],
@@ -132,6 +158,7 @@ async def ingest_document(  # noqa: PLR0917 - FastAPI Form/Depends params, never
     effective_date: Annotated[date | None, Form()] = None,
     format_profile: Annotated[str | None, Form()] = None,
     topic_tags: Annotated[list[str], Form()] = [],  # noqa: B006 - FastAPI Form default, not mutated
+    principal: Principal = Depends(require_role("admin")),
     session: Session = Depends(get_db),
 ) -> DocumentIngestResponse:
     content = await file.read()
@@ -164,6 +191,19 @@ async def ingest_document(  # noqa: PLR0917 - FastAPI Form/Depends params, never
     )
     if created:
         process_document.delay(str(version.id), topic_tags=list(topic_tags))
+    write_event(
+        session,
+        action="ingestion",
+        actor_id=principal_uuid(principal),
+        actor_role="admin",
+        outcome="created" if created else "duplicate",
+        detail={
+            "kind": "document",
+            "document_id": str(version.document_id),
+            "document_version_id": str(version.id),
+            "content_sha256": content_sha256,
+        },
+    )
     return DocumentIngestResponse(
         document_id=str(version.document_id),
         document_version_id=str(version.id),
@@ -173,16 +213,13 @@ async def ingest_document(  # noqa: PLR0917 - FastAPI Form/Depends params, never
     )
 
 
-@router.post(
-    "/records/file",
-    response_model=RecordIngestResponse,
-    dependencies=[Depends(require_role("admin", "service"))],
-)
-async def ingest_records_file(
+@router.post("/records/file", response_model=RecordIngestResponse)
+async def ingest_records_file(  # noqa: PLR0917 - FastAPI Form/Depends params, never called positionally
     file: UploadFile,
     declared_provenance: Annotated[str, Form()],
     dataset_id: Annotated[str | None, Form()] = None,
     attestation_json: Annotated[str | None, Form()] = None,
+    principal: Principal = Depends(require_role("admin", "service")),
     session: Session = Depends(get_db),
 ) -> RecordIngestResponse:
     content = await file.read()
@@ -198,19 +235,18 @@ async def ingest_records_file(
         dataset_id=dataset_id,
         attestation=attestation,
         source="file",
+        actor_id=principal_uuid(principal),
+        actor_role=_select_actor_role(principal.roles, "admin", "service"),
     )
 
 
-@router.post(
-    "/records/eav",
-    response_model=RecordIngestResponse,
-    dependencies=[Depends(require_role("admin", "service"))],
-)
-async def ingest_records_eav(
+@router.post("/records/eav", response_model=RecordIngestResponse)
+async def ingest_records_eav(  # noqa: PLR0917 - FastAPI Form/Depends params, never called positionally
     file: UploadFile,
     mapping_ref: Annotated[str, Form()],
     dataset_id: Annotated[str | None, Form()] = None,
     attestation_json: Annotated[str | None, Form()] = None,
+    principal: Principal = Depends(require_role("admin", "service")),
     session: Session = Depends(get_db),
 ) -> RecordIngestResponse:
     """EAV/long CSV + `mapping_ref` (a directory under
@@ -251,16 +287,16 @@ async def ingest_records_eav(
         dataset_id=dataset_id or desc.dataset_id,
         attestation=attestation,
         source="eav_file",
+        actor_id=principal_uuid(principal),
+        actor_role=_select_actor_role(principal.roles, "admin", "service"),
     )
 
 
-@router.post(
-    "/records",
-    response_model=RecordIngestResponse,
-    dependencies=[Depends(require_role("service"))],
-)
+@router.post("/records", response_model=RecordIngestResponse)
 async def ingest_records_api(
-    batch: RecordIngestBatch, session: Session = Depends(get_db)
+    batch: RecordIngestBatch,
+    principal: Principal = Depends(require_role("service")),
+    session: Session = Depends(get_db),
 ) -> RecordIngestResponse:
     if len(batch.records) > _MAX_API_BATCH_RECORDS:
         raise HTTPException(
@@ -277,4 +313,6 @@ async def ingest_records_api(
         # RecordIngestBatch carries no attestation field -> deidentified is rejected here.
         attestation=None,
         source="api",
+        actor_id=principal_uuid(principal),
+        actor_role="service",
     )

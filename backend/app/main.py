@@ -15,6 +15,7 @@ from app.api.middleware import RequestContextMiddleware
 from app.api.router import api_router
 from app.config import get_settings
 from app.logging import configure_logging, get_logger
+from app.memory.checkpointer import close_checkpointer, get_checkpointer
 
 logger = get_logger(__name__)
 
@@ -29,7 +30,25 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info(
         "startup", app_env=settings.app_env, model_placeholder=settings.is_model_placeholder()
     )
+    # Warm the LangGraph Postgres checkpointer HERE, before serving any
+    # request (DEVIATIONS.md #95) — `PostgresSaver.setup()` runs `CREATE
+    # INDEX CONCURRENTLY`, which (per Postgres's own documented semantics)
+    # waits for every other transaction open anywhere in the database to
+    # finish. Triggering it lazily on the first real request instead (as
+    # `app.agents.graph_runtime.invoke_graph`'s docstring used to justify)
+    # self-deadlocks: that request's own `get_db()` session/transaction is
+    # already open (e.g. `query_pipeline.prepare_query`'s audit-event
+    # INSERT, uncommitted until the request returns) on a *different*
+    # connection than the checkpointer's setup connection, so the CREATE
+    # INDEX waits on a transaction that can never close until the very
+    # request doing the waiting finishes. Found by a real end-to-end
+    # docker-compose run — a real HTTP request through nginx sat until the
+    # proxy's own timeout — not by any offline test or single-script
+    # real-Postgres check (none of which ever held a request-scoped
+    # transaction open across a first-time checkpointer setup).
+    get_checkpointer()
     yield
+    close_checkpointer()
     logger.info("shutdown")
 
 

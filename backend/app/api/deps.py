@@ -2,6 +2,9 @@
 
 - `get_db` — SQLAlchemy session, with the RLS session GUC set from the caller's
   patient scope.
+- `get_patient_scoped_db` — like `get_db`, but RLS-scoped to a `{patient_id}`
+  path parameter (DEVIATIONS.md #88); use for any route shaped
+  `/.../{patient_id}/...`.
 - `current_principal` — authenticated user + roles (via `AuthProvider`).
 - `require_role(...)` — RBAC guard for a route.
 - `purpose_of_use` — required query/header attribute for patient-scoped calls;
@@ -19,9 +22,14 @@ override, and neither depends on `current_principal`.
 `get_db` (`app.db.session.session_scope`) commits on a clean request, rolls
 back on an exception; the RLS GUC it can set (`patient_scope`) is wired at the
 specific call sites that hold a single authoritative `patient_id`
-(`app.records.access`, `app.memory.patient_context` callers), not generically
-here — `POST /query`'s `patient_id` lives in the request body, which isn't
-resolved yet when `get_db` itself runs as a dependency.
+(DEVIATIONS.md #88: `app.agents.patient_record_agent`/`missing_info_agent`,
+each opening their own session; `get_patient_scoped_db` below, for routes),
+not generically here — `POST /query`'s `patient_id` lives in the request
+body, which isn't resolved yet when `get_db` itself runs as a dependency, and
+even where it is (inside the route handler body) that request's `get_db`
+session never touches an RLS-protected table anyway (`memory.conversation`/
+`message` only) — the agents that do touch one open their own, separate
+connection deeper in the graph.
 """
 
 from __future__ import annotations
@@ -61,10 +69,19 @@ def principal_uuid(principal: Principal) -> uuid.UUID:
 
 def get_db() -> Iterator[Session]:
     """Yield a DB session for one request: commits if the request handler
-    completes without raising, rolls back otherwise (`session_scope`).
-    `patient_scope` (the RLS GUC) is not yet threaded from the caller's
-    principal — Phase 4 (ARCH-034)."""
+    completes without raising, rolls back otherwise (`session_scope`). Not
+    RLS-scoped — see module docstring. Use `get_patient_scoped_db` for any
+    route with a `{patient_id}` path parameter (ARCH-034)."""
     with session_scope() as session:
+        yield session
+
+
+def get_patient_scoped_db(patient_id: str) -> Iterator[Session]:
+    """Like `get_db`, RLS-scoped to `patient_id` (DEVIATIONS.md #88). FastAPI
+    binds this dependency's `patient_id` parameter from the route's own
+    `{patient_id}` path parameter by name, the same way it binds the route
+    handler's — no manual wiring needed at each call site."""
+    with session_scope(patient_scope=patient_id) as session:
         yield session
 
 

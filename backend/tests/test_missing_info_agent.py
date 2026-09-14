@@ -21,7 +21,7 @@ _SNAPSHOT = {
 
 
 @contextmanager
-def _fake_session_scope():
+def _fake_session_scope(patient_scope: str | None = None):
     yield None
 
 
@@ -71,3 +71,19 @@ def test_present_field_is_not_reported_missing(monkeypatch) -> None:  # noqa: AN
     out = mia.run({"query": "what is missing?", "patient_id": PATIENT_ID})  # type: ignore[arg-type]
     assert out["missing_info"] == []
     assert "escalation" not in out
+
+
+def test_session_scoped_to_patient_id(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+
+    @contextmanager
+    def _capturing_session_scope(patient_scope: str | None = None):
+        captured["patient_scope"] = patient_scope
+        yield None
+
+    monkeypatch.setattr(mia, "_SESSION_SCOPE", _capturing_session_scope)
+    monkeypatch.setattr(mia, "_RETRIEVE_FN", lambda query, **kw: ([], _SNAPSHOT))  # noqa: ARG005
+    monkeypatch.setattr(mia, "_FIELD_INDEX_FN", lambda session, pid: {})  # noqa: ARG005
+
+    mia.run({"query": "x", "patient_id": PATIENT_ID})  # type: ignore[arg-type]
+    assert captured["patient_scope"] == PATIENT_ID

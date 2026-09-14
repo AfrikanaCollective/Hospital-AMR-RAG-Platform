@@ -1,9 +1,13 @@
-"""Query request/response models (PRD-011..PRD-016, PRD-087; ARCH §8.2).
+"""Query request/response models (PRD-011..PRD-016, PRD-087, PRD-105; ARCH §8.2).
 
 The answer is an ordered list of segments. A claim segment carries >= 1 citation
 and a verbatim quote; a framing segment is non-claim connective text. Every
 response carries a non-removable disclaimer (ARCH-037) — the API will refuse to
 emit a response payload without it.
+
+`QueryJobAccepted`/`QueryJobStatus` back the async pipeline (`POST /query/async`,
+`GET /query/jobs/{job_id}`, DEVIATIONS.md #94) — the same eventual `QueryResponse`
+shape, just reached via a Celery job handle instead of inline.
 """
 
 from __future__ import annotations
@@ -68,3 +72,16 @@ class QueryResponse(BaseModel):
 
     # Non-removable (ARCH-037). Always set.
     disclaimer: str = DISCLAIMER_TEXT
+
+
+class QueryJobAccepted(BaseModel):
+    job_id: str
+    conversation_id: str
+    status: str = "pending"
+
+
+class QueryJobStatus(BaseModel):
+    job_id: str
+    status: str  # pending | done | failed
+    result: QueryResponse | None = None
+    error: str | None = None

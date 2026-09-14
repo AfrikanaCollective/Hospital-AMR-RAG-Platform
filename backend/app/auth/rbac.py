@@ -34,6 +34,8 @@ ROUTE_PERMISSIONS: dict[str, frozenset[str]] = {
     "records:read": frozenset({"clinician"}),
     "ingest:documents": frozenset({"admin"}),
     "ingest:records": frozenset({"admin", "service"}),
+    "corpus:read": frozenset({"clinician", "reviewer", "admin"}),
+    "corpus:manage": frozenset({"admin"}),
     "hitl:decide": frozenset({"reviewer"}),
     "review_queue:read": frozenset({"reviewer"}),
     "rubric:rate": frozenset({"reviewer"}),

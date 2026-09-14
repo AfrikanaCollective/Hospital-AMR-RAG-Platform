@@ -61,6 +61,7 @@ class GraphState(TypedDict, total=False):
     candidate_segments: list[dict[str, Any]]
     candidate_citations: list[dict[str, Any]]
     grounding_report: dict[str, Any]
+    model_id: str  # which model actually answered, for the "answer" audit event (ARCH-035)
 
     # outcome
     escalation: dict[str, Any] | None

@@ -31,7 +31,7 @@ class AuditEvent(Base):
     purpose: Mapped[str | None] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(
         String(32)
-    )  # query|retrieval|record_access|answer|hitl_action|ingest|config_change|login
+    )  # query|retrieval|record_access|answer|hitl_action|ingestion|config_change|login
     conversation_id: Mapped[uuid.UUID | None] = mapped_column()
     patient_id: Mapped[uuid.UUID | None] = mapped_column()
     query_text_enc: Mapped[bytes | None] = mapped_column(LargeBinary)

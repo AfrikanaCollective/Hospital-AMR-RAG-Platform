@@ -30,7 +30,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.db.models.audit import AuditEvent
 
@@ -76,7 +76,38 @@ def _row_fields(event: AuditEvent) -> dict[str, Any]:
     return {f: getattr(event, f) for f in _HASHED_FIELDS}
 
 
+# Arbitrary, stable lock key for the audit-chain advisory lock (DEVIATIONS.md
+# #95). Any fixed 64-bit signed int works; this one just spells something
+# recognizable in hex. Never change it — a running deployment mid-upgrade
+# would stop actually serializing against itself.
+_CHAIN_LOCK_KEY = 0x4155_4449_544C_4F47  # "AUDITLOG" in ASCII hex, truncated to fit
+
+
 def _fetch_last_row_hash(session: Session) -> str | None:
+    # A Postgres session-transaction advisory lock (DEVIATIONS.md #95) —
+    # NOT `SELECT ... FOR UPDATE` on the last row, which was tried first and
+    # verified NOT to work: locking an existing row only blocks a second
+    # transaction from also locking that SAME row, but a fresh INSERT never
+    # modifies that row, so once the lock holder commits, everyone else
+    # blocked on it wakes up and proceeds with the now-stale row they'd
+    # already planned to use — confirmed by a real concurrent-writer test
+    # against a real Postgres that still produced a broken chain with that
+    # approach. An advisory lock instead serializes the whole read-last-hash
+    # + insert-new-row sequence itself, for every caller, regardless of
+    # which row anyone reads: `pg_advisory_xact_lock` blocks until acquired
+    # and auto-releases at COMMIT/ROLLBACK — exactly `write_event`'s own
+    # transaction lifetime (`session_scope()`).
+    #
+    # This is a real, not hypothetical, race: `POST /query`'s own `get_db()`
+    # session writes the `query` event while, moments later,
+    # `app.retrieval.hybrid.retrieve` (called from deep inside the graph
+    # run, on its own separate session) writes `retrieval` and commits
+    # independently, before the outer request session commits — both could
+    # read the same "last row" and produce two rows sharing one `prev_hash`.
+    # Found via a real docker-compose end-to-end run, then reproduced
+    # directly with 8 concurrent writers against a real Postgres; fixed the
+    # same way, verified with the same repro (broken chain -> no breaks).
+    session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _CHAIN_LOCK_KEY})
     return session.execute(
         select(AuditEvent.row_hash).order_by(AuditEvent.id.desc()).limit(1)
     ).scalar_one_or_none()
@@ -134,6 +165,31 @@ def write_event(
     session.add(event)
     session.flush()
     return event
+
+
+_MAX_QUERY_LIMIT = 200
+
+
+def query_events(
+    session: Session,
+    *,
+    action: str | None = None,
+    patient_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
+    limit: int = 50,
+) -> list[AuditEvent]:
+    """Most-recent-first, optionally filtered by exact `action`/`patient_id`/
+    `actor_id`. Backs `GET /admin/audit` (ARCH-035). `limit` is capped at
+    `_MAX_QUERY_LIMIT` regardless of what's requested — an unbounded audit
+    query is its own kind of footgun on a table that only ever grows."""
+    stmt = select(AuditEvent).order_by(AuditEvent.id.desc()).limit(min(limit, _MAX_QUERY_LIMIT))
+    if action is not None:
+        stmt = stmt.where(AuditEvent.action == action)
+    if patient_id is not None:
+        stmt = stmt.where(AuditEvent.patient_id == patient_id)
+    if actor_id is not None:
+        stmt = stmt.where(AuditEvent.actor_id == actor_id)
+    return list(session.execute(stmt).scalars().all())
 
 
 def verify_chain(session: Session) -> list[int]:

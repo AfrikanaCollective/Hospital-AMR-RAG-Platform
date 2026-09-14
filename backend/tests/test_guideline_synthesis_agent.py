@@ -32,6 +32,33 @@ def _valid_response() -> str:
     )
 
 
+def test_default_chat_fn_records_model_id_on_state(monkeypatch) -> None:  # noqa: ANN001
+    """The real (non-`_CHAT_FN`-overridden) path must record which model
+    answered, for the "answer" audit event (ARCH-035, DEVIATIONS.md #91)."""
+
+    class _FakeResult:
+        text = _valid_response()
+        model_id = "stub-model-v7"
+
+    class _FakeGateway:
+        def chat(self, **kwargs):  # noqa: ANN003, ARG002
+            return _FakeResult()
+
+    monkeypatch.setattr(gsa, "_CHAT_FN", None)
+    monkeypatch.setattr(gsa, "LLMGateway", _FakeGateway)
+    state = {
+        "query": "what does the guideline say?",
+        "retrieval": [CHUNK],
+        "retrieval_confidence": {
+            "essentially_empty": False,
+            "low_confidence": False,
+            "conflicts": [],
+        },
+    }
+    out = gsa.run(state)  # type: ignore[arg-type]
+    assert out["model_id"] == "stub-model-v7"
+
+
 def test_essentially_empty_retrieval_returns_no_guideline_without_model_call(monkeypatch) -> None:  # noqa: ANN001
     calls = []
     monkeypatch.setattr(gsa, "_CHAT_FN", lambda prompt: calls.append(prompt) or "[]")  # noqa: ARG005

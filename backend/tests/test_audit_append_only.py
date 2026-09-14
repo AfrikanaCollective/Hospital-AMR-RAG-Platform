@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import app.audit.log as audit_log
-from app.audit.log import GENESIS_HASH, canonical_row, row_hash, verify_chain, write_event
+from app.audit.log import (
+    GENESIS_HASH,
+    canonical_row,
+    query_events,
+    row_hash,
+    verify_chain,
+    write_event,
+)
 from app.db.models.audit import AuditEvent
 
 
@@ -23,6 +30,31 @@ class _FakeSession:
 
     def flush(self) -> None:
         pass
+
+
+class _FakeQuerySession:
+    """`query_events` builds a real `select(...)` and calls `.execute()`
+    directly (it isn't behind `_fetch_last_row_hash`/`_fetch_all_events`).
+    This fake ignores the compiled WHERE clause (matching this suite's
+    established pattern, e.g. `test_auth_repository.py`) and returns canned
+    rows — actual filtering/limit-capping is verified against a real
+    Postgres (DEVIATIONS.md #93)."""
+
+    def __init__(self, rows: list[AuditEvent]) -> None:
+        self._rows = rows
+
+    def execute(self, stmt: object) -> object:
+        class _Res:
+            def __init__(self, rows: list[AuditEvent]) -> None:
+                self._rows = rows
+
+            def scalars(self) -> _Res:
+                return self
+
+            def all(self) -> list[AuditEvent]:
+                return self._rows
+
+        return _Res(self._rows)
 
 
 def test_row_hash_is_deterministic_and_chains() -> None:
@@ -96,6 +128,64 @@ def test_verify_chain_detects_a_tampered_row(monkeypatch) -> None:  # noqa: ANN0
     # easier-to-notice operation a hash chain is meant to force. The app DB
     # role can't run UPDATE on this schema at all regardless (ARCH-035).
     assert verify_chain(_FakeSession()) == [1]
+
+
+def test_fetch_last_row_hash_takes_the_advisory_lock_before_reading(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """Structural regression guard for DEVIATIONS.md #95: a real concurrent-
+    writer race (two sessions both reading the same "last row" before either
+    commits, producing a broken chain link) was found via a real
+    docker-compose run and reproduced directly against a real Postgres.
+    `SELECT ... FOR UPDATE` on the last row was tried and confirmed NOT to
+    fix it (locking an existing row doesn't block a fresh INSERT elsewhere).
+    The actual fix — `pg_advisory_xact_lock` before the read — can't be
+    proven by an offline test (that needs real concurrent DB connections,
+    verified separately against a real Postgres); this only guards against
+    someone removing the lock call while believing `write_event` is still
+    concurrency-safe."""
+    executed = []
+
+    class _Session:
+        def execute(self, stmt, params=None):  # noqa: ANN001
+            executed.append((str(stmt), params))
+
+            class _Res:
+                def scalar_one_or_none(self) -> None:
+                    return None
+
+            return _Res()
+
+    audit_log._fetch_last_row_hash(_Session())  # noqa: SLF001
+    assert len(executed) == 2
+    assert "pg_advisory_xact_lock" in executed[0][0]
+    assert executed[0][1] == {"key": audit_log._CHAIN_LOCK_KEY}
+
+
+def test_query_events_returns_rows_newest_first_as_given() -> None:
+    rows = [AuditEvent(id=2, ts="t2", action="answer"), AuditEvent(id=1, ts="t1", action="query")]
+    result = query_events(_FakeQuerySession(rows))
+    assert [r.id for r in result] == [2, 1]
+
+
+def test_query_events_caps_limit(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+
+    class _CapturingSession:
+        def execute(self, stmt):  # noqa: ANN001
+            captured["limit"] = stmt._limit  # noqa: SLF001 - inspecting the compiled LIMIT clause
+
+            class _Res:
+                def scalars(self):  # noqa: ANN202
+                    return self
+
+                def all(self):  # noqa: ANN202
+                    return []
+
+            return _Res()
+
+    query_events(_CapturingSession(), limit=10_000)
+    assert captured["limit"] == audit_log._MAX_QUERY_LIMIT
 
 
 def test_postgres_init_sql_revokes_update_delete_on_audit() -> None:

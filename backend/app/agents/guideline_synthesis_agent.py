@@ -57,14 +57,24 @@ def _load_template() -> str:
     return (_PROMPTS_DIR / "guideline_synthesis.md").read_text()
 
 
-def _default_chat_fn(prompt: str) -> str:
-    messages = [{"role": "user", "content": prompt}]
-    result = LLMGateway().chat(system="", messages=messages, contains_phi=True)
-    return result.text
+def _default_chat_fn(state: GraphState) -> Callable[[str], str]:
+    """Real (non-test) chat path. Closes over `state` only to record which
+    model actually answered (`state["model_id"]`) — ARCH-035's "answer" audit
+    event needs it, and the `_CHAT_FN` test seam's `str -> str` contract can't
+    carry it back some other way without every test double having to fake a
+    richer return type it has no reason to care about."""
+
+    def _fn(prompt: str) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        result = LLMGateway().chat(system="", messages=messages, contains_phi=True)
+        state["model_id"] = result.model_id
+        return result.text
+
+    return _fn
 
 
-def _resolve_chat_fn() -> Callable[[str], str]:
-    return _CHAT_FN or _default_chat_fn
+def _resolve_chat_fn(state: GraphState) -> Callable[[str], str]:
+    return _CHAT_FN or _default_chat_fn(state)
 
 
 def _build_sources(retrieval: Sequence[Mapping[str, Any]]) -> str:
@@ -134,7 +144,7 @@ def run(state: GraphState) -> GraphState:
             "Retrieval confidence was too low to synthesize a grounded answer.",
         )
 
-    chat_fn = _resolve_chat_fn()
+    chat_fn = _resolve_chat_fn(state)
     prompt = _render_prompt(state)
     last_error: Exception | None = None
     retry_suffix = "\n\nSTRICT: reply with ONLY the JSON list."

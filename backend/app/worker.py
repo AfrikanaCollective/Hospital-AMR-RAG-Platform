@@ -23,6 +23,7 @@ celery_app = Celery(
         "app.ingestion.tasks",
         "app.eval.tasks",
         "app.rubric.tasks",
+        "app.agents.tasks",
     ],
 )
 
