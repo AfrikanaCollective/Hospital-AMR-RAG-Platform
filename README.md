@@ -229,6 +229,215 @@ correction (was 472 before Phase 5's HITL corrections).
 unless requested after seeing the web app (prompt.txt's own Phase 5 scope
 note); no further phase is defined beyond this one.
 
+**Post-approval dockerized smoke test (2026-09-15).** The full `dev`-profile
+stack (`docker compose --profile dev up`) was rebuilt and re-verified end to
+end on a genuinely fresh volume set (not the state carried over from earlier
+sessions), after all Phase 5 changes: `alembic upgrade head`, `scripts/seed_db`,
+real PDF ingestion through `worker` into Qdrant, login for all three roles,
+a `scope_1` query correctly returning "no guideline found" (expected under
+the `dev` profile's stub embeddings/LLM — see below), a `scope_2_excluded`
+query correctly escalating with zero recommendation content, the full
+escalation lifecycle, a real combined rank+accept rating submission through
+the running API with no reason code (confirming `DEVIATIONS.md` #100/#101
+hold outside the offline suite too), a clean audit hash chain
+(`broken_chain_ids: []`), and correct 401/403 auth boundaries through the
+real proxy path a browser uses. One real bug was found and fixed: the
+`proxy` container's own Docker healthcheck falsely reported `unhealthy`
+(nginx binds IPv4 only; the container resolves `localhost` to both address
+families and busybox `wget` doesn't fall back) — fixed by pointing the
+healthcheck at `127.0.0.1` explicitly. See `DEVIATIONS.md` #102 for the full
+account. **Note on answer quality under the `dev` profile:** `EMBEDDING_BACKEND=stub`
+and the `llm-gateway` stub server are deterministic offline fakes — the
+stub embedding is a hash, not a real semantic vector, and the stub chat
+model always returns a fixed non-answer by design (`app/llm/stub.py`) — so
+real grounded synthesis is not exercised by this profile; the `dev` profile
+proves the infrastructure and safety fallbacks work correctly, not answer
+quality. A real answer with real citations needs `EMBEDDING_BACKEND=local`
+(or `gateway`) and a real `LLM_GATEWAY_URL`.
+
+**Real gateway wired in (2026-09-15).** The operator's own self-hosted
+gateway (chat: `qwen3.5:9b`; embeddings: `qllama/bge-large-en-v1.5:latest`,
+self-signed cert) was wired in end to end — `EMBEDDING_BACKEND=gateway` is
+now implemented (was `NotImplementedError`), reachable from `api`/`worker`
+via `host.docker.internal` with the cert trusted (`LLM_GATEWAY_CA_BUNDLE`/
+`EMBEDDING_GATEWAY_CA_BUNDLE`) and an explicit SNI-hostname override for the
+cert/route hostname mismatch (`LLM_GATEWAY_SNI_HOSTNAME`/
+`EMBEDDING_GATEWAY_SNI_HOSTNAME`) — verification is never disabled. Along the
+way: `LLMGateway.chat()`'s response parsing was corrected — the real gateway
+returns `{"content", ...}`, not the OpenAI `choices: [...]` shape this
+project had assumed (and shipped tests for) without ever checking against a
+real gateway's chat endpoint; the dev/CI stub (`app/llm/stub_server.py`) now
+mirrors the same real shape for both chat and embeddings. `RERANKER_BACKEND=local`
+was run against real downloaded weights for the first time, which surfaced
+and fixed a real `hf-model-cache` named-volume permission bug (root-owned by
+default, unwritable by the non-root container user — `backend/Dockerfile`).
+A real end-to-end query then showed the grounding gate working correctly
+against a real model for the first time: retrieval found the right guideline
+section and the LLM produced a real, accurate candidate answer, but every
+segment was correctly flagged `quote_mismatch` and escalated rather than
+released, because the model paraphrased instead of reproducing verbatim
+quotes. See `DEVIATIONS.md` #103 for the full account, including why getting
+this model to reliably emit quote-anchored segments (a prompt-tuning /
+model-capability question) is flagged as a distinct, not-yet-done follow-up.
+
+**Root cause found and fixed — a real released, cited answer (2026-09-15).**
+The `quote_mismatch` above was not the model paraphrasing: comparing the real
+retrieved chunk's raw stored text against the model's quote showed the
+guideline PDF's text extraction preserves the source PDF's line-wrap points
+as literal newlines mid-sentence (a layout artifact, not a semantic break) —
+the model reproduced the words correctly, in order, with ordinary spaces,
+which is what "verbatim" should mean, but the grounding gate's quote check
+was a byte-exact substring test that a newline-standing-in-for-a-space
+silently failed. Fixed with one shared, whitespace-tolerant matching
+primitive (`app.citations.model.find_verbatim_quote`), applied consistently
+across all four places that were independently doing byte-exact matching
+(`app/grounding/verifier.py`'s two call sites, `build_citation`,
+`verify_citation`) — every run of whitespace in a quote matches any run of
+whitespace in the source; every other character must still match exactly, in
+order, so a genuinely reworded quote still fails (a dedicated test pins this
+down). Re-ran the exact same real query against the same real gateway and
+already-ingested document: `observed_outcome` went from `escalated` to
+**`well_supported`** — 7 claim segments released, 2 real citations with real
+page numbers, section paths, and verbatim quotes resolving into the actual
+ingested WHO guideline text. See `DEVIATIONS.md` #104 for the full account.
+
+**Two more real bugs found via operator browser testing (2026-09-15).**
+"On the browser, the initial query runs well with results. Citations are
+limited to three rather than showing all the guidelines cited. Repeat
+queries with different cases do not update the initial text shown" —
+neither `AnswerView.tsx` nor `CitationList.tsx` had a bug (no slicing or
+caching in either); both were real backend defects surfacing through the UI.
+
+1. **Repeat queries returned the first query's answer, always.** The
+   LangGraph checkpointer's `thread_id` was scoped to `conversation_id` (the
+   whole conversation) rather than one graph run — the checkpointer persists
+   the whole state per thread and merges each new turn's input on top of
+   the *previous* turn's, so `orchestrator.run`'s "have I classified this
+   turn yet" check (`"scope_label" not in state`) misfired on every second+
+   turn and silently re-returned the first turn's stale answer, never even
+   looking at the new question. Fixed by scoping `thread_id` per graph run
+   (`app.agents.graph_runtime.new_turn_thread_id`); reproduced directly at
+   the graph level with a real checkpointer, then re-verified live: two
+   genuinely different real questions in the same conversation now get two
+   genuinely different real answers. See `DEVIATIONS.md` #105.
+2. **A released answer could reference a citation with nothing behind it.**
+   A claim segment citing several sources is released if *any* one of them
+   verifies (models commonly over-cite) — but the *unverified* ids were
+   left in the segment's `citation_ids` anyway, producing a footnote
+   reference in the answer text with no matching entry in the citations
+   list. Fixed by narrowing a released segment to only the citation ids that
+   actually verified, without changing any pass/fail decision. Verified via
+   a direct reproduction through the real agent function (not dependent on
+   a live model) plus new tests at every layer touched. See `DEVIATIONS.md`
+   #107 for the full account, including why this could not be re-confirmed
+   against the operator's exact live example (a richer, freshly-ingested
+   3-document corpus instead surfaced two other real, separate, *disclosed*
+   conditions — correct `conflicting_sources` escalations across the wider
+   corpus, and a pre-existing model JSON-output-reliability limitation on
+   longer source blocks — neither of which this fix addresses).
+
+While re-testing with a larger real PDF, also found and fixed: nginx's
+default 1MB upload cap silently 413'd any real-sized guideline PDF (`deploy/nginx/nginx.conf`,
+`client_max_body_size` was never set) — see `DEVIATIONS.md` #106.
+
+**A third real observation, and one open question (2026-09-15).** A specific
+three-finding query ("...low birth weight, apnoea and fever?") showed
+citations `c1, c2, c7` — not sequential. Real, correct data (citation labels
+are retrieval-rank positions, not order of use — a model citing only its
+1st/2nd/7th-ranked retrieved chunks produces exactly that), but confusing to
+read as if entries went missing. Fixed as a presentation-only renumbering
+(`frontend/src/citations.ts::renumberForDisplay`, used in `AnswerView.tsx`)
+— sequential `c1, c2, c3` on screen, backend/API/audit data untouched. See
+`DEVIATIONS.md` #108. The same report also raised that the answer for that
+specific combined presentation read as generic per-topic content rather
+than an integrated assessment — investigated, not dismissed: retrieval
+found genuinely separate per-topic passages (no single source covers all
+three findings together), and the synthesis agent is deliberately barred
+from combining them into one patient-specific narrative — doing so would
+cross into SCOPE-2.3 (CDS-FUTURE.md's hard boundary). Left as an open
+question for the operator rather than unilaterally changed, since any
+prompt change here sits adjacent to that boundary.
+
+**The operator's follow-up: "what about the intersection of topics?"
+(2026-09-15, operator-approved).** Investigated before writing anything:
+the ingested Kenya newborn-care guideline turns out to have its own
+combined-findings classification — a real "Assessing for possible Bacterial
+Infection" section listing apnoea (among other signs) as mapping to
+"Severe neonatal sepsis" with specific management, and a temperature range
+(covering fever) in the next tier — and retrieval was already finding this
+exact chunk, just not reporting its classification structure coherently.
+With explicit go-ahead, added one new rule to
+`app/agents/prompts/guideline_synthesis.md`: when a **single** source
+passage groups several findings under one named classification, keep that
+grouping visible in the answer (a framing segment naming the category, not
+an isolated fragment) — never combining findings across *different*
+sources, and never asserting the described newborn *meets* that
+classification (still SCOPE-2.3, still out of scope; the system reports
+what the guideline says, not what it means for the case described). A first
+draft of the rule ("report as one coherent claim") caused a real, measured
+regression — the model's JSON output started getting cut off mid-string on
+some live attempts — diagnosed directly (not guessed) via the raw gateway
+response's `finish_reason`/token usage, then fixed by requiring the
+connection stay visible across normally-sized claims/quotes instead of one
+oversized one. Verified live against the real gateway and the real
+guideline: the operator's exact question now (when the call completes
+normally) returns a `well_supported` answer citing the classification and
+explicitly connecting apnoea and fever to it. Disclosed, not hidden: this
+specific query still intermittently hits a pre-existing (not newly
+introduced) gateway/retrieval-variability issue that produces malformed
+model JSON — the system's grounding gate correctly escalates every time
+that happens rather than showing a partial answer; fixing that reliability
+gap needs visibility into the operator's own gateway this codebase doesn't
+have. See `DEVIATIONS.md` #109 for the full account.
+
+**The actual root cause of that "malformed JSON" escalation, found (2026-09-15).**
+The operator hit the same escalation again on the same query. Rather than
+re-disclose it as unavoidable a third time, captured the real model's raw
+output directly — it wraps its JSON in a markdown code fence
+(`` ```json...``` ``), a common habit for locally-served models regardless
+of prompt instructions, and `app.grounding.segments.parse_segments` never
+stripped one — `json.loads` on the raw fenced text fails immediately. This
+explains every "model output is not valid JSON" escalation seen across this
+whole session, not just this query (DEVIATIONS #103/#107/#109 had each
+independently hit this and disclosed it as unresolved gateway variability).
+Fixed at the parsing layer, not the prompt (a prompt instruction had already
+been tried indirectly via the existing retry suffix and didn't reliably
+work): a narrow regex unwraps a *complete* fence before parsing; a fence
+that never closes (a genuinely truncated response) still correctly fails,
+so this doesn't paper over real truncation, only stops a complete, valid,
+merely-fenced response from being wrongly discarded. Verified against the
+exact real fenced content that had failed live, then against the operator's
+exact query run 4 times in a row through the real endpoint after
+redeploying: `well_supported`, zero parse failures, every time — where
+before roughly 2 of 3 attempts failed this way. See `DEVIATIONS.md` #110.
+
+**A second, different failure on the same query, fixed the same day.** The
+operator hit `grounding_failure` again — this time the raw model output had
+no code fence at all, just plain prose ending each sentence in an inline
+`[c1]`-style citation marker instead of the required JSON, and it survived
+the existing single retry. Building a fallback parser for this shape was
+considered and rejected as unsafe: it carries no verbatim quote, only a
+paraphrase and a bracket, and accepting it would mean either treating the
+paraphrase as the "quote" (which correctly fails verification anyway) or
+having the system invent a supporting excerpt on the model's behalf —
+undermining the actual point of the grounding gate. Fixed by making the
+model more reliably produce the real format instead: one more retry
+attempt (2 → 3), a retry instruction that names the exact wrong behavior
+("do not write prose, do not use inline citation markers...") instead of
+just repeating the original ask, and a concrete few-shot JSON example added
+to the prompt. Checked first whether the gateway offers a native JSON-mode
+parameter that would constrain generation directly (more robust than hoping
+the model complies) — it doesn't expose one. The few-shot example then
+caused its own real, live-caught side effect: the model started writing
+"Guideline X recommends…" *literally*, copying the example's placeholder
+title instead of substituting the real one — fixed by rewording the prompt
+to require the actual SOURCES document title and using an obviously
+fictitious example title with an explicit "never reuse this" callout.
+Verified live: 5/5 successes after the retry/example fix, then 3/3 more
+after the title fix, correctly naming "Comprehensive Newborn Care
+Protocols" and still connecting apnoea and fever to the guideline's own
+classification. See `DEVIATIONS.md` #111.
+
 ### Repository layout
 
 ```

@@ -23,7 +23,10 @@ Retrieval-confidence gating happens HERE, before any model call (ARCH §7.5):
 Only a genuinely supported retrieval reaches the model.
 
 Malformed / structurally invalid model output (ARCH §8.2: free-form prose
-without segment structure) is rejected and regenerated once; a second failure
+without segment structure — including a real, observed failure mode where a
+gateway model wrote flattened prose with inline `[c1]`-style citation
+markers instead of the required JSON list, DEVIATIONS.md #111) is rejected
+and regenerated up to `_MAX_ATTEMPTS - 1` times; exhausting every attempt
 escalates (grounding_failure) rather than passing bad output downstream.
 """
 
@@ -40,7 +43,12 @@ from app.llm.gateway import LLMGateway
 from app.schemas.enums import EscalationTrigger, ObservedOutcome
 
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-_MAX_ATTEMPTS = 2
+# 3, not 2 (DEVIATIONS.md #111): a real gateway model has been observed
+# ignoring the JSON output format entirely on a retry too — reverting to
+# free-form prose with inline `[c1]`-style citation markers instead of the
+# required JSON list — so the single retry this used to allow wasn't always
+# enough. One more attempt costs latency only on the already-failing path.
+_MAX_ATTEMPTS = 3
 
 NO_GUIDELINE_TEXT = (
     "No guideline in the retrieved corpus addresses this question. No recommendation "
@@ -147,7 +155,22 @@ def run(state: GraphState) -> GraphState:
     chat_fn = _resolve_chat_fn(state)
     prompt = _render_prompt(state)
     last_error: Exception | None = None
-    retry_suffix = "\n\nSTRICT: reply with ONLY the JSON list."
+    # DEVIATIONS.md #111: the original one-line "STRICT" suffix wasn't
+    # forceful enough on its own — a real gateway model was observed
+    # reverting to prose with inline `[c1]` markers even on the retry.
+    # Spelled out explicitly what NOT to do (prose, inline citation
+    # brackets, markdown, commentary), not just what TO do, since a model
+    # that already ignored the positive instruction once needs the failure
+    # mode named directly, not just restated more tersely.
+    retry_suffix = (
+        "\n\nSTRICT: your previous reply was not a valid JSON list of segments. "
+        "Do not write prose. Do not use inline citation markers like [c1] in "
+        "running text. Do not use markdown or a code fence. Reply with ONLY a "
+        "raw JSON array, starting with [ and ending with ], e.g.: "
+        '[{"type": "framing", "text": "..."}, {"type": "claim", "text": "...", '
+        '"citation_ids": ["c1"], "quote": "<verbatim quote from c1>"}]. No text '
+        "before or after the array."
+    )
     for attempt in range(_MAX_ATTEMPTS):
         this_prompt = prompt if attempt == 0 else prompt + retry_suffix
         raw = chat_fn(this_prompt)

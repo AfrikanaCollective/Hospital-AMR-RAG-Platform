@@ -22,6 +22,12 @@ CHUNK = {
     "char_end": 200,
 }
 
+OTHER_CHUNK = {
+    **CHUNK,
+    "chunk_id": "ch2",
+    "text": "Start empiric antibiotics within one hour of suspected sepsis.",
+}
+
 
 def test_all_supported_releases_and_builds_citations(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(cva, "_ENTAILMENT_FN", lambda claim, quote: "yes")  # noqa: ARG005
@@ -41,6 +47,29 @@ def test_all_supported_releases_and_builds_citations(monkeypatch) -> None:  # no
     assert "escalation" not in out
     assert len(out["candidate_citations"]) == 1
     assert out["candidate_citations"][0]["chunk_id"] == "ch1"
+
+
+def test_over_cited_segment_drops_the_unverified_id(monkeypatch) -> None:  # noqa: ANN001
+    """DEVIATIONS.md #107: a segment citing two ids where only one actually
+    contains the quote is released (a segment is SUPPORTED if ANY cited id
+    verifies) — but the unverified id must not survive into the returned
+    segment, or the UI renders a footnote link with no citation behind it."""
+    monkeypatch.setattr(cva, "_ENTAILMENT_FN", lambda claim, quote: "yes")  # noqa: ARG005
+    state = {
+        "retrieval": [CHUNK, OTHER_CHUNK],
+        "candidate_segments": [
+            {
+                "type": "claim",
+                "text": "record respiratory rate at presentation",
+                "citation_ids": ["c1", "c2"],  # only c1's chunk has the quote
+                "quote": "Record respiratory rate at presentation",
+            }
+        ],
+    }
+    out = cva.run(state)  # type: ignore[arg-type]
+    assert out["grounding_report"]["action"] == "release"
+    assert out["candidate_segments"][0]["citation_ids"] == ["c1"]
+    assert [c["citation_id"] for c in out["candidate_citations"]] == ["c1"]
 
 
 def test_scope_violation_escalates_with_safety_filter(monkeypatch) -> None:  # noqa: ANN001

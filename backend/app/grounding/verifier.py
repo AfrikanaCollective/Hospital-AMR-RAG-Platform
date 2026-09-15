@@ -27,7 +27,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app.citations.model import build_citation
+from app.citations.model import build_citation, find_verbatim_quote
 from app.config import get_settings
 from app.grounding.wording import scan_segment
 from app.schemas.citation import Citation
@@ -75,6 +75,12 @@ class SegmentVerdict:
     verdict: GroundingVerdict
     # reason: citation_not_retrieved | quote_mismatch | not_entailed | scope_violation
     reason: str | None = None
+    # For a SUPPORTED/WEAK claim segment (DEVIATIONS.md #107): the subset of
+    # the segment's own citation_ids whose chunk actually contains the quote
+    # — a segment is kept if ANY cited id verifies, but that does not mean
+    # every cited id does. `None` for framing segments / unsupported verdicts,
+    # where it's unused.
+    verified_citation_ids: list[str] | None = None
 
 
 @dataclass
@@ -168,8 +174,12 @@ def _verify_claim_segment(
     if not citation_ids or any(c is None for c in chunks):
         return SegmentVerdict(idx, GroundingVerdict.UNSUPPORTED, "citation_not_retrieved")
 
-    matching_chunk = next((c for c in chunks if c and quote and quote in c.get("text", "")), None)
-    if matching_chunk is None:
+    verified_ids = [
+        cid
+        for cid, c in zip(citation_ids, chunks, strict=True)
+        if c and quote and find_verbatim_quote(quote, c.get("text", ""))
+    ]
+    if not verified_ids:
         return SegmentVerdict(idx, GroundingVerdict.UNSUPPORTED, "quote_mismatch")
 
     if scan_segment(text, cited_quotes=[quote]):
@@ -179,8 +189,8 @@ def _verify_claim_segment(
     if verdict == "no":
         return SegmentVerdict(idx, GroundingVerdict.UNSUPPORTED, "not_entailed")
     if verdict == "partly":
-        return SegmentVerdict(idx, GroundingVerdict.WEAK, None)
-    return SegmentVerdict(idx, GroundingVerdict.SUPPORTED, None)
+        return SegmentVerdict(idx, GroundingVerdict.WEAK, None, verified_citation_ids=verified_ids)
+    return SegmentVerdict(idx, GroundingVerdict.SUPPORTED, None, verified_citation_ids=verified_ids)
 
 
 def _decide_action(per_segment: list[SegmentVerdict], claim_indexes: set[int]) -> GroundingReport:
@@ -261,7 +271,7 @@ def citations_for_segments(
             if cid in out:
                 continue
             chunk = _resolve_chunk(cid, by_label, by_id)
-            if chunk is None or quote not in chunk.get("text", ""):
+            if chunk is None or not find_verbatim_quote(quote, chunk.get("text", "")):
                 continue
             out[cid] = build_citation(cid, chunk, quote)
     return out

@@ -50,3 +50,26 @@ def test_built_citation_reverifies() -> None:
     quote = "recommended before antimicrobials"
     cit = build_citation("c1", CHUNK_ROW, quote)
     assert verify_citation(cit, CHUNK_TEXT)
+
+
+def test_builds_citation_across_a_pdf_line_wrap_newline() -> None:
+    """DEVIATIONS.md #104: a chunk with a mid-sentence line-wrap newline (a
+    real PDF-extraction artifact — often with trailing spaces before the
+    newline, e.g. from justified text) still builds a citation for a quote
+    that reproduces the same words with normal single-space spacing."""
+    wrapped_text = "Blood cultures are   \nrecommended before antimicrobials where feasible."
+    row = {
+        **CHUNK_ROW,
+        "text": wrapped_text,
+        "char_end": CHUNK_ROW["char_start"] + len(wrapped_text),
+    }
+    quote = "Blood cultures are recommended before antimicrobials"
+    cit = build_citation("c1", row, quote)
+    assert cit.quote == quote  # stores what was asked for, not the raw excerpt
+    excerpt = wrapped_text[
+        cit.quote_char_start - row["char_start"] : cit.quote_char_end - row["char_start"]
+    ]
+    # the real span is longer than the quote (3 trailing spaces + a newline
+    # standing in for the quote's single space) but the words match exactly
+    assert excerpt == "Blood cultures are   \nrecommended before antimicrobials"
+    assert " ".join(excerpt.split()) == quote

@@ -42,3 +42,13 @@ def test_altered_quote_fails() -> None:
 def test_offset_out_of_range_fails() -> None:
     q = "respiratory rate"
     assert not verify_citation(_cit(q, 5000, 5016), CHUNK_TEXT)
+
+
+def test_verifies_across_a_pdf_line_wrap_newline() -> None:
+    """DEVIATIONS.md #104: quote_char_start/end may point at a raw span one
+    or more characters longer than the stored quote (a line-wrap newline
+    standing in for a space) — verify_citation must still pass."""
+    wrapped = "The guideline recommends recording respiratory\nrate and oxygen saturation."
+    q = "The guideline recommends recording respiratory rate"
+    cit = _cit(q, 0, len(q) + 1)  # +1: the newline in the source, not counted in q
+    assert verify_citation(cit, wrapped)

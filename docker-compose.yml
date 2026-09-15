@@ -19,7 +19,14 @@ services:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./deploy/tls:/etc/nginx/tls:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      # 127.0.0.1, not "localhost": nginx's `listen 80`/`listen 443 ssl`
+      # bind IPv4 only, but the container's /etc/hosts resolves "localhost"
+      # to both 127.0.0.1 and ::1 — busybox wget (this image's wget) tries
+      # ::1 first and does not fall back to the IPv4 address on refusal, so
+      # every check failed with "Connection refused" despite nginx serving
+      # real requests correctly (DEVIATIONS.md #102). `api`'s own healthcheck
+      # (Python's urllib) doesn't hit this — its resolver order falls back.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -47,6 +54,14 @@ services:
       timeout: 3s
       retries: 5
     user: "10001:10001"
+    # Lets a container reach an LLM/embedding gateway published on the HOST's
+    # own localhost (e.g. an operator-run gateway on 127.0.0.1:8443) via
+    # LLM_GATEWAY_URL=https://host.docker.internal:<port> — needs the
+    # `host-gateway` special value on Linux (Docker Desktop provides this
+    # name automatically; Linux Engine does not, hence this entry). Harmless
+    # no-op for the default in-network stub gateway (DEVIATIONS.md #103).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Inert until EMBEDDING_BACKEND/RERANKER_BACKEND=local is implemented
       # (Phase 2) and the image is built with the `local-models` extra
@@ -63,6 +78,12 @@ services:
       # into") and makes uploads survive a container recreate.
       - ./data/sample_guidelines:/app/data/sample_guidelines
       - ./data/patient_records:/app/data/patient_records
+      # Read-only: an optional extra CA cert for LLM_GATEWAY_CA_BUNDLE /
+      # EMBEDDING_GATEWAY_CA_BUNDLE, e.g. a self-signed cert on an operator's
+      # own gateway (DEVIATIONS.md #103). Gitignored (deploy/tls/*.pem); the
+      # directory is mounted even when empty so no build/rebuild is needed
+      # just to add a cert later.
+      - ./deploy/tls:/app/deploy/tls:ro
     # Optional GPU passthrough for local embedding/reranker inference (needs
     # the NVIDIA Container Toolkit on the host). CPU fallback works without
     # this — see README.md "Requirements". Uncomment when RERANKER_DEVICE or
@@ -86,11 +107,14 @@ services:
       qdrant: {condition: service_started}
     command: ["celery", "-A", "app.worker.celery_app", "worker", "-l", "info"]
     user: "10001:10001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - hf-model-cache:/home/appuser/.cache/huggingface
       # Shared with `api` — see the matching comment there (DEVIATIONS.md #95).
       - ./data/sample_guidelines:/app/data/sample_guidelines
       - ./data/patient_records:/app/data/patient_records
+      - ./deploy/tls:/app/deploy/tls:ro
 
   redis:
     image: redis:7-alpine

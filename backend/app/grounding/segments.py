@@ -9,12 +9,33 @@ regenerated once; a second failure escalates.
 from __future__ import annotations
 
 import json
+import re
 
 from app.schemas.enums import SegmentType
 
 
 class SegmentParseError(ValueError):
     """The model's output is not valid JSON, or not a list of segments."""
+
+
+# A real, operator-supplied gateway model routinely wraps its JSON output in
+# a markdown code fence despite `guideline_synthesis.md`'s "Output format"
+# asking for a bare JSON list (DEVIATIONS.md #110, found live: content
+# starting `` ```json\n[...` `` failed `json.loads` immediately at char 0,
+# "Expecting value" — every one of 6 identical, deterministic live calls
+# against the real gateway hit exactly this). Unwrapped here, once, so every
+# caller of `parse_segments` benefits — not routed through a prompt
+# instruction, since "STRICT: reply with ONLY the JSON list" (the agent's
+# own retry-attempt suffix) had already asked for exactly this and the model
+# still fenced it; a model's tendency to fence structured output is a real,
+# common serving-side behavior this parser should tolerate, not something to
+# keep re-asking the model to stop doing.
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _unwrap_code_fence(text: str) -> str:
+    match = _CODE_FENCE_RE.search(text)
+    return match.group(1) if match else text
 
 
 def parse_segments(raw: object) -> list[dict]:
@@ -30,6 +51,8 @@ def parse_segments(raw: object) -> list[dict]:
     once, then escalate" (ARCH §8.2), distinct from a hard parse failure.
     """
     text = raw if isinstance(raw, str) else json.dumps(raw)
+    if isinstance(raw, str):
+        text = _unwrap_code_fence(text)
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError) as exc:

@@ -122,6 +122,50 @@ def test_released_answer_round_trips(client: TestClient, monkeypatch) -> None:  
     assert body["escalation"] is None
 
 
+def test_two_turns_in_one_conversation_get_distinct_thread_ids(
+    client: TestClient, monkeypatch
+) -> None:  # noqa: ANN001
+    """DEVIATIONS.md #105: the checkpointer's thread_id must be unique per
+    graph run, not per conversation — reusing conversation_id as thread_id
+    let a second turn's orchestrator visit see the first turn's leftover
+    checkpointed state (scope_label/final_answer already set) and silently
+    re-return the first turn's answer without ever processing the new
+    question. Asserted here at the actual route layer (test_agent_graph.py's
+    test_reusing_a_thread_id_across_turns_leaks_stale_state reproduces the
+    underlying mechanism at the graph level)."""
+    seen_thread_ids: list[str] = []
+
+    def _fake_invoke(initial_state, thread_id):  # noqa: ANN001, ARG001
+        seen_thread_ids.append(thread_id)
+        return {
+            "scope_label": ScopeLabel.SCOPE_1,
+            "observed_outcome": ObservedOutcome.WELL_SUPPORTED,
+            "retrieval": [],
+            "grounding_report": {"action": "release"},
+            "final_answer": {"segments": [], "citations": []},
+        }
+
+    monkeypatch.setattr(query_mod, "_GRAPH_INVOKE_FN", _fake_invoke)
+    first = client.post(
+        "/api/query",
+        json={"question": "What does the guideline say about fever?"},
+        headers={"X-Purpose-Of-Use": "clinical_care"},
+    )
+    conversation_id = first.json()["conversation_id"]
+    client.post(
+        "/api/query",
+        json={
+            "question": "What does the guideline say about jaundice?",
+            "conversation_id": conversation_id,
+        },
+        headers={"X-Purpose-Of-Use": "clinical_care"},
+    )
+
+    assert len(seen_thread_ids) == 2
+    assert seen_thread_ids[0] != seen_thread_ids[1]
+    assert all(tid.startswith(f"{conversation_id}:") for tid in seen_thread_ids)
+
+
 def test_escalated_response_round_trips(client: TestClient, monkeypatch) -> None:  # noqa: ANN001
     def _fake_invoke(initial_state, thread_id):  # noqa: ANN001, ARG001
         return {

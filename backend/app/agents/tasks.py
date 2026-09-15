@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.agents.graph_runtime import invoke_graph
+from app.agents.graph_runtime import invoke_graph, new_turn_thread_id
 from app.agents.query_pipeline import assemble_and_persist_response
 from app.db.session import session_scope
 from app.worker import celery_app
@@ -37,7 +37,7 @@ _INVOKE_GRAPH_FN = invoke_graph
 @celery_app.task(name="agents.run_query")
 def run_query(initial_state: dict) -> dict:
     conversation_id = initial_state["conversation_id"]
-    out = _INVOKE_GRAPH_FN(initial_state, conversation_id)
+    out = _INVOKE_GRAPH_FN(initial_state, new_turn_thread_id(conversation_id))
     with session_scope() as session:
         response = assemble_and_persist_response(
             session,

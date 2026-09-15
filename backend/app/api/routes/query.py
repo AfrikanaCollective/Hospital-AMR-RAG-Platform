@@ -55,7 +55,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.agents.graph_runtime import invoke_graph
+from app.agents.graph_runtime import invoke_graph, new_turn_thread_id
 from app.agents.query_pipeline import ROLE, assemble_and_persist_response, prepare_query
 from app.agents.tasks import run_query
 from app.api.deps import Principal, principal_uuid, purpose_of_use, require_role
@@ -102,7 +102,7 @@ async def submit_query(
         )
     initial_state = _build_initial_state(body, principal, purpose, conversation_id)
     try:
-        out = _GRAPH_INVOKE_FN(initial_state, str(conversation_id))
+        out = _GRAPH_INVOKE_FN(initial_state, new_turn_thread_id(str(conversation_id)))
     except Exception as exc:  # noqa: BLE001 - never surface an internal error as a clinical answer
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, "The query pipeline failed unexpectedly."

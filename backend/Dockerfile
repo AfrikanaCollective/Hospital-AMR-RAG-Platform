@@ -53,8 +53,17 @@ RUN pip install -r requirements-lock.txt \
 
 COPY . .
 
-# Non-root (matches docker-compose `user:` mapping).
-RUN useradd -u 10001 -m appuser && chown -R appuser:appuser /app
+# Non-root (matches docker-compose `user:` mapping). The HF cache dir is
+# created (not just chowned as part of /app) so a fresh `hf-model-cache`
+# named volume mounted over it inherits appuser's ownership from this image
+# layer — Docker otherwise creates a brand-new named volume's mount point as
+# root:root, which RERANKER_BACKEND=local/EMBEDDING_BACKEND=local (writing
+# downloaded HF weights here as uid 10001) then can't write to
+# (DEVIATIONS.md #103 — the same class of UID mismatch as DEVIATIONS.md #95's
+# `data/` bind mounts, but for a named volume instead of a bind mount).
+RUN useradd -u 10001 -m appuser \
+ && mkdir -p /home/appuser/.cache/huggingface \
+ && chown -R appuser:appuser /app /home/appuser/.cache
 USER 10001
 
 EXPOSE 8000

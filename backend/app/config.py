@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     # ── LLM gateway (ARCH-005 / PRD-101 / PRD-102) ──
     llm_gateway_url: str = "http://llm-gateway:8080"
     llm_gateway_api_key: str = ""  # Bearer token; set only in your local .env, never committed
+    # Path to a CA cert (PEM) to trust for llm_gateway_url, in addition to the
+    # system trust store — for a self-hosted gateway on a self-signed or
+    # internal-CA cert (DEVIATIONS.md #103). Empty = default verification
+    # (httpx's bundled certifi store) only; TLS verification is never
+    # disabled by this setting, only ever given one more cert to trust.
+    llm_gateway_ca_bundle: str = ""
+    # TLS server-name override (DEVIATIONS.md #103): when llm_gateway_url's
+    # hostname isn't the one the gateway's certificate was actually issued
+    # for — e.g. reaching a self-hosted gateway via host.docker.internal
+    # (docker-compose's stand-in for the container host) whose cert covers
+    # only "localhost" — set this to the cert's real hostname. Overrides ONLY
+    # the TLS SNI + hostname-verification target, never which host is
+    # connected to (still llm_gateway_url) and never whether verification
+    # runs at all. Empty (default) = verify against llm_gateway_url's own
+    # hostname, the normal case.
+    llm_gateway_sni_hostname: str = ""
     model_id: str = PLACEHOLDER_MODEL_ID
     model_id_fallbacks: str = ""  # comma-separated
     model_id_verified: bool = False
@@ -66,9 +82,15 @@ class Settings(BaseSettings):
     embedding_doc_prefix: str = ""
     # Separate from llm_gateway_url: the embedding gateway may be a different
     # base URL/service than the chat-completion gateway (DEVIATIONS.md #42).
-    # Only consulted once EMBEDDING_BACKEND=gateway is implemented (Phase 2).
+    # Implemented (DEVIATIONS.md #103): app.ingestion.embed's "gateway" branch.
     embedding_gateway_url: str = ""
     embedding_gateway_api_key: str = ""
+    # Same self-signed/internal-CA support as llm_gateway_ca_bundle, for the
+    # (possibly different) embedding gateway (DEVIATIONS.md #103).
+    embedding_gateway_ca_bundle: str = ""
+    # Same SNI/hostname-verification override as llm_gateway_sni_hostname,
+    # for the embedding gateway (DEVIATIONS.md #103).
+    embedding_gateway_sni_hostname: str = ""
     reranker_backend: str = "stub"
     reranker_model_id: str = "BAAI/bge-reranker-v2-m3"  # UNVERIFIED placeholder
     reranker_model_verified: bool = False

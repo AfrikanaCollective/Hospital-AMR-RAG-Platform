@@ -9,6 +9,15 @@ escalation per the §8.3 verdict policy.
 Does NOT: rewrite content to make it pass; add citations.
 Access: this turn's retrieval snapshot + candidate segments.
 Tools: get_chunk, nli_support_check, resolve_citation, lexical_overlap, wording_scan.
+
+A kept claim segment's `citation_ids` is narrowed to the verified subset
+before it's ever returned (DEVIATIONS.md #107): a segment is SUPPORTED/WEAK
+if ANY of its cited ids has a chunk containing the quote — a model
+frequently over-cites, listing two or three plausible sources per claim when
+only one actually contains the quote — but the *un*verified ids among them
+must not survive into the final answer, or the UI renders a footnote link
+(`[c2]`) with no citation object behind it, and the citations list under-
+counts what the answer text appears to reference.
 """
 
 from __future__ import annotations
@@ -102,7 +111,20 @@ def run(state: GraphState) -> GraphState:
         return state
 
     stripped = set(report.stripped_segment_indexes)
-    kept_segments = [seg for i, seg in enumerate(segments) if i not in stripped]
+    verdicts_by_index = {v.segment_index: v for v in report.per_segment}
+    kept_segments = []
+    for i, seg in enumerate(segments):
+        if i in stripped:
+            continue
+        verdict = verdicts_by_index.get(i)
+        kept = seg
+        if verdict and verdict.verified_citation_ids is not None:
+            # DEVIATIONS.md #107: a segment is kept if ANY of its cited ids
+            # verifies, not all — narrow to just the ones that actually do,
+            # so a released segment never references a citation_id nothing
+            # downstream builds a Citation for (a dangling footnote link).
+            kept = {**seg, "citation_ids": verdict.verified_citation_ids}
+        kept_segments.append(kept)
     citations = citations_for_segments(kept_segments, snapshot)
     state["candidate_segments"] = kept_segments
     state["candidate_citations"] = [c.model_dump(mode="json") for c in citations.values()]

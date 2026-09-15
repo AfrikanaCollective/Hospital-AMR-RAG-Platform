@@ -4,9 +4,15 @@ Run by the `llm-gateway` docker-compose service under the `dev`/`full` profiles.
 Real deployments drop this service and point LLM_GATEWAY_URL at the actual
 self-hosted gateway.
 
-Phase 2 gives this a minimal OpenAI-ish `/v1/chat/completions`,
-`/v1/embeddings`, and `/v1/rerank` surface backed by app.llm.stub. For Phase 1
-it just serves a health endpoint so the container starts.
+`/v1/chat/completions` and `/v1/embeddings` mirror the real, operator-supplied
+gateway's actual (non-OpenAI-shaped) response shapes —
+`{"model", "content", ...}` and `{"model", "embeddings", ...}` respectively —
+confirmed live against that gateway (DEVIATIONS.md #103, correcting an
+earlier, never-actually-verified OpenAI-shaped assumption, DEVIATIONS.md
+#42/#44 for background). `/v1/rerank` is this stub's own invention: the real
+gateway has no rerank endpoint at all (RERANKER_BACKEND never uses "gateway",
+DEVIATIONS.md #44), so nothing production-facing depends on this route's
+exact shape.
 """
 
 from __future__ import annotations
@@ -26,13 +32,15 @@ async def healthz() -> dict[str, str]:
 @app.post("/v1/chat/completions")
 async def chat(body: dict) -> dict:
     r = stub_chat(system=body.get("system", ""), messages=body.get("messages", []))
-    return {"model": r.model_id, "choices": [{"message": {"role": "assistant", "content": r.text}}]}
+    return {"model": r.model_id, "content": r.text, "finish_reason": "stop", "usage": r.usage}
 
 
 @app.post("/v1/embeddings")
 async def embeddings(body: dict) -> dict:
-    vecs = stub_embed(body.get("input", []))
-    return {"data": [{"embedding": v, "index": i} for i, v in enumerate(vecs)]}
+    raw_input = body.get("input", [])
+    texts = [raw_input] if isinstance(raw_input, str) else raw_input
+    vecs = stub_embed(texts)
+    return {"model": body.get("model", ""), "embeddings": vecs}
 
 
 @app.post("/v1/rerank")

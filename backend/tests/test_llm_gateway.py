@@ -1,5 +1,6 @@
-"""LLMGateway.chat() -- HTTP call against the OpenAI-ish gateway contract
-(ARCH-005), offline via httpx.MockTransport (no network)."""
+"""LLMGateway.chat() -- HTTP call against the real gateway's actual
+(non-OpenAI) response contract (ARCH-005, DEVIATIONS.md #103),
+offline via httpx.MockTransport (no network)."""
 
 from __future__ import annotations
 
@@ -43,7 +44,8 @@ def test_chat_success_returns_text_and_model_id() -> None:
             200,
             json={
                 "model": "primary-model",
-                "choices": [{"message": {"role": "assistant", "content": "hello back"}}],
+                "content": "hello back",
+                "finish_reason": "stop",
                 "usage": {"total_tokens": 5},
             },
         )
@@ -61,13 +63,39 @@ def test_chat_sends_bearer_auth_header_when_api_key_set() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["auth"] = request.headers.get("authorization")
-        return httpx.Response(
-            200, json={"model": "primary-model", "choices": [{"message": {"content": "x"}}]}
-        )
+        return httpx.Response(200, json={"model": "primary-model", "content": "x"})
 
     gw = _gateway_with_transport(_settings(llm_gateway_api_key="secret-token"), handler)
     gw.chat(system="", messages=[])
     assert seen["auth"] == "Bearer secret-token"
+
+
+def test_chat_sends_sni_hostname_extension_when_set() -> None:
+    """DEVIATIONS.md #103: settings.llm_gateway_sni_hostname overrides the TLS
+    SNI/hostname-verification target (e.g. reaching a gateway via
+    host.docker.internal whose cert covers "localhost") without disabling
+    verification — httpx's per-request `extensions={"sni_hostname": ...}`."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["sni_hostname"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200, json={"model": "primary-model", "content": "x"})
+
+    gw = _gateway_with_transport(_settings(llm_gateway_sni_hostname="localhost"), handler)
+    gw.chat(system="", messages=[])
+    assert seen["sni_hostname"] == "localhost"
+
+
+def test_chat_omits_sni_hostname_extension_by_default() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["sni_hostname"] = request.extensions.get("sni_hostname")
+        return httpx.Response(200, json={"model": "primary-model", "content": "x"})
+
+    gw = _gateway_with_transport(_settings(), handler)
+    gw.chat(system="", messages=[])
+    assert seen["sni_hostname"] is None
 
 
 def test_chat_falls_back_to_next_model_on_failure() -> None:
@@ -78,9 +106,7 @@ def test_chat_falls_back_to_next_model_on_failure() -> None:
         calls.append(model)
         if model == "primary-model":
             return httpx.Response(500, json={"error": "boom"})
-        return httpx.Response(
-            200, json={"model": model, "choices": [{"message": {"content": "from fallback"}}]}
-        )
+        return httpx.Response(200, json={"model": model, "content": "from fallback"})
 
     gw = _gateway_with_transport(_settings(model_id_fallbacks="fallback-model"), handler)
     result = gw.chat(system="", messages=[])
@@ -106,9 +132,7 @@ def test_chat_retries_before_falling_back(monkeypatch: pytest.MonkeyPatch) -> No
         attempts.append(1)
         if len(attempts) < _RETRY_ATTEMPTS_BEFORE_SUCCESS:
             return httpx.Response(500, json={"error": "transient"})
-        return httpx.Response(
-            200, json={"model": "primary-model", "choices": [{"message": {"content": "ok"}}]}
-        )
+        return httpx.Response(200, json={"model": "primary-model", "content": "ok"})
 
     gw = _gateway_with_transport(_settings(llm_max_retries=2), handler)
     result = gw.chat(system="", messages=[])

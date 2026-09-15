@@ -149,7 +149,7 @@ def test_malformed_output_retries_then_escalates(monkeypatch) -> None:  # noqa: 
         },
     }
     out = gsa.run(state)  # type: ignore[arg-type]
-    assert calls["n"] == 2  # one retry
+    assert calls["n"] == 3  # two retries (DEVIATIONS.md #111: _MAX_ATTEMPTS raised 2 -> 3)
     assert out["escalation"]["trigger_code"] == EscalationTrigger.GROUNDING_FAILURE
 
 
@@ -173,3 +173,56 @@ def test_second_attempt_succeeding_recovers(monkeypatch) -> None:  # noqa: ANN00
     out = gsa.run(state)  # type: ignore[arg-type]
     assert "escalation" not in out
     assert calls["n"] == 2
+
+
+def test_third_attempt_succeeding_recovers(monkeypatch) -> None:  # noqa: ANN001
+    """DEVIATIONS.md #111: _MAX_ATTEMPTS raised 2 -> 3 after a real model was
+    observed ignoring the JSON format on the first retry too — the second
+    retry must still get a chance."""
+    calls = {"n": 0}
+
+    def _chat(prompt: str) -> str:  # noqa: ARG001
+        calls["n"] += 1
+        return "not json" if calls["n"] < 3 else _valid_response()
+
+    monkeypatch.setattr(gsa, "_CHAT_FN", _chat)
+    state = {
+        "query": "x",
+        "retrieval": [CHUNK],
+        "retrieval_confidence": {
+            "essentially_empty": False,
+            "low_confidence": False,
+            "conflicts": [],
+        },
+    }
+    out = gsa.run(state)  # type: ignore[arg-type]
+    assert "escalation" not in out
+    assert calls["n"] == 3
+
+
+def test_prose_with_inline_citation_markers_is_rejected_not_parsed(monkeypatch) -> None:  # noqa: ANN001
+    """DEVIATIONS.md #111: reproduces the exact real-world failure shape —
+    the model ignoring the JSON schema entirely and writing flattened prose
+    with inline `[c1]`-style citation markers instead. This must never be
+    treated as valid output (there is no verbatim quote to machine-verify
+    against a source, only a paraphrase with a bracket) — it should fail to
+    parse on every attempt and escalate, same as any other malformed output."""
+    prose = (
+        "The guideline addresses the management of small and sick newborns "
+        "presenting with specific danger signs such as apnoea, fever, and low "
+        "birth weight. Per [source], small and sick newborns are adequately "
+        "monitored, appropriately reassessed and receive supportive care "
+        "according to MoH guidelines.[c1]"
+    )
+    monkeypatch.setattr(gsa, "_CHAT_FN", lambda prompt: prose)  # noqa: ARG005
+    state = {
+        "query": "x",
+        "retrieval": [CHUNK],
+        "retrieval_confidence": {
+            "essentially_empty": False,
+            "low_confidence": False,
+            "conflicts": [],
+        },
+    }
+    out = gsa.run(state)  # type: ignore[arg-type]
+    assert out["escalation"]["trigger_code"] == EscalationTrigger.GROUNDING_FAILURE

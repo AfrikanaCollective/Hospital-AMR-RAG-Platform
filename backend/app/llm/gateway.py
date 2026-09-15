@@ -7,22 +7,38 @@ Constraint #6:
   - fallback routing tries `MODEL_ID_FALLBACKS` in order on gateway
     error/timeout.
 
-Wire contract: an OpenAI-ish `POST /v1/chat/completions` — matches
-`app.llm.stub_server` (the dev/CI stub) and the shape DEVIATIONS.md #42
-confirmed against a real operator-supplied self-hosted gateway for the sibling
-`/v1/embeddings` endpoint. Request: `{"model", "system", "messages", **params}`.
-Response: `{"model", "choices": [{"message": {"content"}}], "usage"?}`.
+Wire contract (DEVIATIONS.md #103, correcting an earlier unverified
+assumption): `POST /v1/chat/completions`. Request: `{"model", "system",
+"messages", **params}` (unchanged). Response: `{"model", "content",
+"finish_reason"?, "usage"?}` — a flatter, non-OpenAI shape, NOT the
+OpenAI `choices: [{"message": {"content"}}]` shape this contract was
+originally (and wrongly) documented as, before it was ever checked against a
+real gateway's `/v1/chat/completions` response (DEVIATIONS.md #42 verified
+only the sibling `/v1/embeddings` shape at the time). `app.llm.stub_server`
+(the dev/CI stub) mirrors this same real shape.
 
 Transport security (DEVIATIONS.md #54): `httpx.Client` verifies TLS
-certificates by default (never disabled here); `Settings.validate_gateway_transport()`
-(called at construction) warns if `LLM_GATEWAY_URL` is plaintext against a
-non-local host — see that method's docstring for why "private net" doesn't
-cover the real gateway the way it covers Postgres/Redis/Qdrant.
+certificates by default (never disabled here); `settings.llm_gateway_ca_bundle`
+(DEVIATIONS.md #103) adds one more trusted CA (e.g. a self-signed cert on an
+internal gateway) without ever turning verification off outright.
+`settings.llm_gateway_sni_hostname` (DEVIATIONS.md #103) is a separate,
+narrower override for when `llm_gateway_url`'s hostname genuinely isn't what
+the gateway's cert was issued for — e.g. a docker-compose container reaching
+an operator's gateway via `host.docker.internal`, whose cert covers
+`localhost` — every request's TLS SNI and hostname check then target this
+value instead, while the connection itself still goes to `llm_gateway_url`
+and full chain verification still runs; empty (default) leaves both as the
+same, normal case. `Settings.validate_gateway_transport()` (called at
+construction) warns if `LLM_GATEWAY_URL` is plaintext against a non-local
+host — see that method's docstring for why "private net" doesn't cover the
+real gateway the way it covers Postgres/Redis/Qdrant.
 
 `embed`/`rerank` on this class remain unimplemented: `app.ingestion.embed` and
 `app.retrieval.rerank` are the actual dispatch points (local/stub/gateway) and
-do not route through here — see their own modules. Their `gateway` branches
-are separate future work, not blocking this class's `chat()`.
+do not route through here — see their own modules. `app.ingestion.embed`'s
+`gateway` branch is now implemented (DEVIATIONS.md #103); `app.retrieval.rerank`'s
+is not — the real gateway this was verified against has no rerank endpoint,
+matching DEVIATIONS.md #44's decision not to assume gateway reranking.
 """
 
 from __future__ import annotations
@@ -60,6 +76,7 @@ class LLMGateway:
         self._client = httpx.Client(
             base_url=self.settings.llm_gateway_url,
             timeout=self.settings.llm_timeout_seconds,
+            verify=self.settings.llm_gateway_ca_bundle or True,
         )
 
     @property
@@ -72,6 +89,11 @@ class LLMGateway:
             return {"Authorization": f"Bearer {self.settings.llm_gateway_api_key}"}
         return {}
 
+    def _extensions(self) -> dict[str, str]:
+        if self.settings.llm_gateway_sni_hostname:
+            return {"sni_hostname": self.settings.llm_gateway_sni_hostname}
+        return {}
+
     def _post_chat_completion(
         self, *, model_id: str, system: str, messages: list[dict], params: dict
     ) -> dict:
@@ -79,6 +101,7 @@ class LLMGateway:
             "/v1/chat/completions",
             json={"model": model_id, "system": system, "messages": messages, **params},
             headers=self._headers(),
+            extensions=self._extensions(),
         )
         resp.raise_for_status()
         return resp.json()
@@ -102,7 +125,7 @@ class LLMGateway:
                     data = self._post_chat_completion(
                         model_id=model_id, system=system, messages=messages, params=params
                     )
-                    choice = data["choices"][0]["message"]["content"]
+                    choice = data["content"]
                     return ChatResult(
                         text=choice,
                         model_id=data.get("model", model_id),

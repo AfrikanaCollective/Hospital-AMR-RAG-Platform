@@ -162,3 +162,31 @@ def test_scope2_query_without_patient_never_reaches_patient_record(graph) -> Non
         config={"configurable": {"thread_id": "t6"}},
     )
     assert out["scope_label"] == ScopeLabel.OUT_OF_SCOPE
+
+
+def test_reusing_a_thread_id_across_turns_leaks_stale_state(graph) -> None:  # noqa: ANN001
+    """Documents *why* callers must never reuse a checkpointer thread_id
+    across separate turns (DEVIATIONS.md #105) — reproduces the actual bug
+    at the graph level, not just asserts the fix. A checkpointer persists
+    the whole state per thread and merges each new `invoke()`'s input on top
+    of it; `orchestrator.run` tells its two intra-turn visits apart by
+    `"scope_label" not in state`, which only holds if the thread is fresh.
+    Reusing one thread_id for a second, different query here reproduces
+    `app.api.routes.query`/`app.agents.tasks`'s real bug before DEVIATIONS
+    #105's fix (which lives in those callers, choosing a fresh thread_id per
+    call — not in the graph itself, which has no way to know)."""
+    shared_thread = {"configurable": {"thread_id": "reused-across-turns"}}
+    first = graph.invoke(
+        {"query": "What does the guideline recommend for fever?"}, config=shared_thread
+    )
+    assert first["scope_label"] == ScopeLabel.SCOPE_1
+
+    second = graph.invoke({"query": "What is the hospital's parking policy?"}, config=shared_thread)
+    # The second, genuinely different query never got classified — the
+    # leaked-over scope_label/final_answer from the first turn short-circuit
+    # orchestrator straight back to the stale answer.
+    assert second["scope_label"] == ScopeLabel.SCOPE_1  # wrong: should be OUT_OF_SCOPE
+    assert (
+        second["query"] == "What is the hospital's parking policy?"
+    )  # the new query WAS passed in
+    assert second["final_answer"] == first["final_answer"]  # but the OLD answer came back

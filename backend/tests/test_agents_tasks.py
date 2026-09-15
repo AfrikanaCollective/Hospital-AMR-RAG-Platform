@@ -64,7 +64,10 @@ def test_run_query_invokes_graph_persists_and_returns_response_dict(
     }
     result = tasks_mod.run_query(initial_state)
 
-    assert captured_state["thread_id"] == CONVERSATION_ID
+    # thread_id is per-turn, not per-conversation (DEVIATIONS.md #105) — a
+    # fresh id every call, conversation_id kept only as a readable prefix.
+    assert captured_state["thread_id"] != CONVERSATION_ID
+    assert captured_state["thread_id"].startswith(f"{CONVERSATION_ID}:")
     assert result["conversation_id"] == CONVERSATION_ID
     assert result["observed_outcome"] == "well_supported"
     assert result["scope_label"] == "scope_1"
