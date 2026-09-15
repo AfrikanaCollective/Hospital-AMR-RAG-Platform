@@ -60,13 +60,13 @@ def test_compute_slice_irr_filters_by_provenance_and_writes_batch() -> None:
     )
     raters = [uuid.uuid4(), uuid.uuid4()]
     ratings = [
-        _rating(r1.id, raters[0], "accuracy", 5),
-        _rating(r1.id, raters[1], "accuracy", 4),
+        _rating(r1.id, raters[0], "medical_consensus_alignment", 5),
+        _rating(r1.id, raters[1], "medical_consensus_alignment", 4),
     ]
     session = _FakeSession([r1], ratings)  # pre-filtered by the (fake) query
     batch = tasks._run_compute_slice_irr(session, {"provenance": "clinician_submitted"})
     assert batch.n_items == 1
-    assert "accuracy" in batch.per_domain
+    assert "medical_consensus_alignment" in batch.per_domain
     assert batch in session.added
 
 

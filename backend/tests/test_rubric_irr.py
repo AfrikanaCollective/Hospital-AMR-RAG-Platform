@@ -40,10 +40,13 @@ def test_all_missing_returns_zero_not_a_crash() -> None:
 
 def test_per_domain_irr_reports_n_raters_and_n_items() -> None:
     results = per_domain_irr(
-        {"accuracy": [[5, 5, 5], [4, 4, 3]], "safety": [[5, 4], [5, 5]]},
+        {
+            "medical_consensus_alignment": [[5, 5, 5], [4, 4, 3]],
+            "extent_of_harm": [[5, 4], [5, 5]],
+        },
     )
     by_domain = {r.domain_code: r for r in results}
-    assert by_domain["accuracy"].n_raters == 3
-    assert by_domain["accuracy"].n_items == 2
-    assert by_domain["safety"].n_raters == 2
+    assert by_domain["medical_consensus_alignment"].n_raters == 3
+    assert by_domain["medical_consensus_alignment"].n_items == 2
+    assert by_domain["extent_of_harm"].n_raters == 2
     assert all(r.metric == "krippendorff_alpha_ordinal" for r in results)

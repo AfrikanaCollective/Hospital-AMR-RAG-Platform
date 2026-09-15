@@ -10,21 +10,16 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.rubric.domains import RUBRIC_DOMAIN_CODES
 from app.schemas.enums import HitlAcceptAction
 
-RUBRIC_DOMAIN_CODES: tuple[str, ...] = (
-    "accuracy",
-    "groundedness",
-    "completeness",
-    "safety",
-    "scope_adherence",
-    "contextual_appropriateness",
-    "clarity",
-    "relevance",
-    "uncertainty_handling",
-    "missing_info_handling",
-    "bias_equity",
-)
+__all__ = [
+    "RUBRIC_DOMAIN_CODES",
+    "DomainScore",
+    "RatingRoundRequest",
+    "IRRDomainScore",
+    "ResultRatingSummary",
+]
 
 
 class DomainScore(BaseModel):

@@ -10,7 +10,12 @@ from app.schemas.rubric import RUBRIC_DOMAIN_CODES as SCHEMA_CODES
 def test_eleven_domains_with_four_required_and_the_named_four() -> None:
     assert len(RUBRIC_DOMAINS) == 11
     required = {d.code for d in RUBRIC_DOMAINS if d.required}
-    assert required == {"accuracy", "safety", "contextual_appropriateness", "clarity"}
+    assert required == {
+        "medical_consensus_alignment",
+        "extent_of_harm",
+        "clear_communication",
+        "local_context_understanding",
+    }
 
 
 def test_domain_codes_match_between_schema_and_reference() -> None:

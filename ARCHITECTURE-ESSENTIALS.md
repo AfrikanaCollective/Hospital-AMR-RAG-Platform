@@ -258,10 +258,12 @@ conformity for **in-scope capabilities only** (SCOPE-1.*, 2.1, 2.2). Shows a
 measurement process exists. **Not** evidence for and **not** justification for
 SCOPE-2.3/2.4 — those need a separate validation pathway.
 
-**11 domains** (each 5-pt Likert, anchors stored in `rubric_domain`):
-`accuracy`*, `groundedness`, `completeness`, `safety`*, `scope_adherence`,
-`contextual_appropriateness`*, `clarity`*, `relevance`, `uncertainty_handling`,
-`missing_info_handling`, `bias_equity`. (* = brief-required minimum.)
+**11 domains**, operator-supplied rubric (DEVIATIONS #112; each 5-pt Likert,
+anchors stored in `rubric_domain`): `medical_consensus_alignment`*,
+`question_comprehension`, `knowledge_recall`, `logical_reasoning`,
+`irrelevant_content`, `information_omission`, `extent_of_harm`*,
+`likelihood_of_harm`, `clear_communication`*, `local_context_understanding`*,
+`demographic_bias`. (* = required minimum.)
 
 **Workflow:** clinician rates → result enters **open review queue** → any
 *other* distinct clinician rates independently → at **≥3 distinct raters**,

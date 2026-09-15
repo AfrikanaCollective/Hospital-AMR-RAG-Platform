@@ -99,7 +99,7 @@ def test_submit_rating_requires_all_domains(client: TestClient) -> None:
     resp = client.post(
         f"/api/rubric/results/{RESULT_ID}/ratings",
         json={
-            "scores": [{"domain_code": "accuracy", "score": 5}],
+            "scores": [{"domain_code": "medical_consensus_alignment", "score": 5}],
             "accept_action": "full_accept",
         },
     )

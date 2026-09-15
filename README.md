@@ -438,6 +438,36 @@ after the title fix, correctly naming "Comprehensive Newborn Care
 Protocols" and still connecting apnoea and fever to the guideline's own
 classification. See `DEVIATIONS.md` #111.
 
+**The 11-domain rubric was an invented placeholder, replaced with the
+operator's real rubric (2026-09-15, operator-supplied).** The 11 domains
+implemented through Phase 5 (`accuracy`, `groundedness`, `completeness`,
+`safety`, `scope_adherence`, `contextual_appropriateness`, `clarity`,
+`relevance`, `uncertainty_handling`, `missing_info_handling`, `bias_equity`)
+were this codebase's own invention — PRD-040 named a domain count and
+Likert scale but never an actual rubric source. The operator supplied the
+full, authoritative rubric text (all 11 domain names, definitions, and
+every 5-point anchor), which now fully replaces the placeholder in
+`app/rubric/domains.py`: `medical_consensus_alignment`,
+`question_comprehension`, `knowledge_recall`, `logical_reasoning`,
+`irrelevant_content`, `information_omission`, `extent_of_harm`,
+`likelihood_of_harm`, `clear_communication`, `local_context_understanding`,
+`demographic_bias`. Two judgment calls were needed and are logged, not
+silently made: which 4 domains count as "required" (the operator's text
+doesn't mark any; kept the same count and relative role as the old
+placeholder's 4) and how to resolve the source text's I–X-then-XII
+numbering gap into sequential ordinals 1–11. Also fixed, found in the same
+pass: `app/schemas/rubric.py` had its own independently hardcoded copy of
+the domain-code list, previously kept in sync only by hand — now imports
+from `app/rubric/domains.py`, a single source of truth. The live DB's
+`eval.rubric_domain` table had zero dependent rating rows (confirmed before
+touching it); reseeded with the new 11, and the 11 orphaned old rows were
+deleted with explicit operator approval. Verified: `make lint`/`make
+test` (498 passed)/`make typecheck` clean; rebuilt and redeployed
+`api`/`worker`/`proxy` (the backend image bakes in `app/`, so a code
+change needs a rebuild, not just a restart) and confirmed `GET
+/api/rubric/domains` live returns exactly the 11 new domains, correctly
+ordered, with the operator's own anchor text. See `DEVIATIONS.md` #112.
+
 ### Repository layout
 
 ```

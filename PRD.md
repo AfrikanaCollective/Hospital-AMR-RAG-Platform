@@ -116,7 +116,7 @@ IDs are permanent. New requirements append; existing IDs are never renumbered.
 
 | ID | Requirement |
 |---|---|
-| PRD-040 | Rank mode uses an **11-domain rubric**, each domain scored on a **5-point Likert scale**. Domains and definitions are fixed in ARCHITECTURE.md and include at minimum: accuracy, safety, contextual appropriateness, communication/clarity. |
+| PRD-040 | Rank mode uses an **11-domain rubric**, each domain scored on a **5-point Likert scale**. Domains and definitions are the operator-supplied rubric fixed in ARCHITECTURE.md §14.1 (DEVIATIONS.md #112) and include at minimum: alignment with medical consensus, possible extent of harm, clear communication, understanding of local context. |
 | PRD-041 | Rubric scores are stored as **structured data** (domain, score, rater ID, timestamp, result ID), queryable and auditable — not free text. Free-text comments are an optional adjunct field. |
 | PRD-042 | Multi-rater workflow: (1) a clinician rates an output; (2) the rated-but-unarchived output enters an **open review queue**; (3) any *other* clinician can pull and rate it independently; (4) once **≥ 3 distinct clinicians** total have rated it, an **inter-rater reliability** statistic is computed **per rubric domain**; (5) the result is then **archived** with full rating history and IRR scores; (6) until the minimum rater count is met, the result stays visible in the open queue. |
 | PRD-043 | "Distinct clinician" is enforced (no self-re-rating, no duplicate-account rating counting twice toward the minimum). |
