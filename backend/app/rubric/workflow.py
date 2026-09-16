@@ -17,17 +17,30 @@ always `True` here.
 `is_eligible_rater`) is always `None` in this pipeline: every rated result is
 system-produced (an agent-generated answer or a question-generator output),
 never authored by a clinician, so there is no producer to exclude.
+
+**Queue visibility + priority (`select_queue_items`, DEVIATIONS.md #113):**
+ARCH §14.2 documents only the `< 3` visibility cutoff, not an ordering
+between an unrated result and a partially-rated one. Reviewer-stated rule:
+the queue only ever shows results with 0-2 distinct rating rounds from other
+clinicians; if ANY of those has 1-2 rounds already, ONLY those are offered
+(finishing an in-progress result toward the 3-rater minimum takes priority
+over starting a fresh one) — once none remain, the 0-round results become
+selectable. `list_queue_candidates` does the DB read (open, excluding
+whatever the caller has already rated); `select_queue_items` is the pure
+priority rule over that list, unit-tested without a database, same style as
+`is_eligible_rater`/`can_archive` above.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.db.models.eval import IRRScore, RatingRound, Result, ResultArchive, RubricRating
@@ -49,6 +62,12 @@ class QueueState(StrEnum):
     NOT_QUEUED = "not_queued"
     OPEN_QUEUE = "open"
     ARCHIVED = "archived"
+
+
+# A result archives once it reaches get_settings().irr_min_raters (3)
+# distinct rounds, so "in progress" (visible, but not fresh) tops out at 2 —
+# a literal, not the configurable min-raters value itself (DEVIATIONS.md #113).
+_MAX_IN_PROGRESS_ROUNDS = 2
 
 
 class ResultNotFoundError(LookupError):
@@ -73,6 +92,60 @@ def can_archive(
     *, distinct_rater_count: int, min_raters: int, all_domains_scored_by_each: bool
 ) -> bool:
     return distinct_rater_count >= min_raters and all_domains_scored_by_each
+
+
+@dataclass(frozen=True)
+class QueueCandidate:
+    """One open result eligible for a given rater (already excludes results
+    that rater has rated and anything not `queue_state == 'open'`) —
+    `list_queue_candidates`'s output, `select_queue_items`'s input."""
+
+    result_id: uuid.UUID
+    distinct_rater_count: int
+    created_at: datetime
+
+
+def select_queue_items(candidates: list[QueueCandidate]) -> list[QueueCandidate]:
+    """The queue visibility + priority rule (see module docstring,
+    DEVIATIONS.md #113). `candidates` must already be limited to `open`
+    results with 0-2 distinct rounds, excluding the calling rater's own —
+    this function only decides which of *those* to actually offer:
+
+    - if any candidate has 1 or 2 rounds ("in progress"), return ONLY those
+      (finishing an in-progress result takes priority over a fresh one);
+    - otherwise return every 0-round candidate.
+
+    Oldest-first within the returned bucket — a stable, deterministic
+    tie-break, not a second priority tier."""
+    in_progress = [c for c in candidates if 1 <= c.distinct_rater_count <= _MAX_IN_PROGRESS_ROUNDS]
+    pool = in_progress if in_progress else [c for c in candidates if c.distinct_rater_count == 0]
+    return sorted(pool, key=lambda c: c.created_at)
+
+
+def list_queue_candidates(session: Session, rater_id: uuid.UUID) -> list[QueueCandidate]:
+    """`open` results with 0-2 distinct rating rounds, excluding any result
+    `rater_id` has already rated (they couldn't rate it again anyway —
+    `rating_round`'s own `UNIQUE (result_id, rater_id)` — so it's excluded
+    from their queue view entirely, not just left unselectable)."""
+    already_rated = select(RatingRound.result_id).where(RatingRound.rater_id == rater_id)
+    rater_counts = (
+        select(
+            RatingRound.result_id.label("result_id"),
+            func.count(func.distinct(RatingRound.rater_id)).label("n"),
+        )
+        .group_by(RatingRound.result_id)
+        .subquery()
+    )
+    stmt = (
+        select(Result.id, Result.created_at, func.coalesce(rater_counts.c.n, 0))
+        .outerjoin(rater_counts, rater_counts.c.result_id == Result.id)
+        .where(Result.queue_state == QueueState.OPEN_QUEUE)
+        .where(Result.id.not_in(already_rated))
+    )
+    return [
+        QueueCandidate(result_id=result_id, created_at=created_at, distinct_rater_count=count)
+        for result_id, created_at, count in session.execute(stmt).all()
+    ]
 
 
 def _fetch_result(session: Session, result_id: uuid.UUID) -> Result | None:

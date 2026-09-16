@@ -100,16 +100,60 @@ _FRAMING_WORDS = frozenset(
         "about",
         "male",
         "female",
+        # Category/connective words for describing what's listed, not a
+        # patient fact in themselves (DEVIATIONS.md #115 — found live: a
+        # real gateway model naturally uses these when rendering the
+        # record's own section labels — e.g. "current medications", "an
+        # examination finding of..." — into a sentence; rejecting them
+        # rejected every real vitals/intervention-bearing record almost
+        # regardless of content). None of these can introduce a new
+        # clinical fact on their own — the specific value/name attached to
+        # them must still independently be in `record_vocab`.
+        "currently",
+        "receiving",
+        "including",
+        "such",
+        "showing",
+        "care",
+        "setting",
+        "current",
+        "life",
+        "addresses",
+        "presentation",
+        "question",
+        "steps",
+        "strategies",
+        "guideline-lookup",
+        "examination",
+        "findings",
+        "interventions",
+        "medications",
+        # Generic descriptive adjectives/verbs — carry no clinical fact of
+        # their own, found recurring live across otherwise-clean narratives
+        # after the additions above (DEVIATIONS.md #115).
+        "appropriate",
+        "undergoing",
+        "considerations",
+        "exhibiting",
     }
 )
 
-# Units of measurement, not clinical facts in their own right — a numeric
-# field's value (e.g. gestational_age_weeks=34.0) is already in the record
-# vocabulary; the narrative must still be able to say "34 weeks gestation"
-# rather than just the bare number. Deliberately limited to units/descriptors
-# of a *value*, not clinical-finding words (no "breathing"/"heart"/"oxygen"
-# here) — those must still trace to an actual record value, so a fabricated
-# finding stays catchable.
+# Units of measurement AND the vitals-label words needed to describe a
+# measurement in English, not clinical facts in their own right — a numeric
+# field's value (e.g. heart_rate_bpm=140.0) is already in the record
+# vocabulary; the narrative must still be able to say "a heart rate of 140
+# bpm" rather than just the bare number "140". This set used to read "no
+# 'breathing'/'heart'/'oxygen' here... those must still trace to an actual
+# record value, so a fabricated finding stays catchable" — that conflated a
+# measurement LABEL (safe: the number it's attached to still has to match
+# the record) with an actual clinical FINDING word (unsafe: e.g.
+# "grunting"/"cyanosis" name a fact in their own right and must still come
+# from the record's own `problems`/`examination_findings` values, which
+# this set does not touch). Found live against a real gateway model
+# (DEVIATIONS.md #115): every real vitals-bearing record failed validation
+# on words like "heart"/"rate"/"temperature" — there is no way to describe
+# an admission-vitals reading in English without them, so this wasn't a
+# model-compliance gap, it was an incompleteness in what this set allowed.
 _UNIT_WORDS = frozenset(
     {
         "weeks",
@@ -129,6 +173,20 @@ _UNIT_WORDS = frozenset(
         "minutes",
         "hour",
         "hours",
+        "second",
+        "seconds",
+        "heart",
+        "rate",
+        "respiratory",
+        "temperature",
+        "spo2",
+        "capillary",
+        "refill",
+        "weight",
+        "vitals",
+        "vital",
+        "signs",
+        "birth",
     }
 )
 

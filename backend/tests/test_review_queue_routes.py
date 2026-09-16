@@ -24,7 +24,8 @@ class _FakeSession:
         return next((r for r in self._results if r.id == pk), None)
 
     def execute(self, stmt: object) -> object:
-        entity = stmt.column_descriptions[0]["entity"]  # type: ignore[attr-defined]
+        descriptions = stmt.column_descriptions  # type: ignore[attr-defined]
+        entity = descriptions[0]["entity"]
 
         class _Res:
             def __init__(self, rows: list) -> None:
@@ -38,7 +39,27 @@ class _FakeSession:
 
         if entity is RatingRound:
             return _Res(self._rounds)
-        # The only Result select in these routes filters queue_state=="open".
+        if len(descriptions) > 1:
+            # app.rubric.workflow.list_queue_candidates's tuple-select
+            # (Result.id, Result.created_at, distinct rater count) — a
+            # different shape from the whole-entity `select(Result)` below,
+            # so it needs its own branch here. Replicates that function's
+            # filters in plain Python: `queue_state == "open"`, excluding
+            # anything the calling rater (RATER_ID — the only principal any
+            # test in this module acts as) has already rated.
+            already_rated = {rr.result_id for rr in self._rounds if rr.rater_id == RATER_ID}
+            rows = [
+                (
+                    r.id,
+                    r.created_at,
+                    len({rr.rater_id for rr in self._rounds if rr.result_id == r.id}),
+                )
+                for r in self._results
+                if r.queue_state == "open" and r.id not in already_rated
+            ]
+            return _Res(rows)
+        # The only remaining (whole-entity) Result select in these routes
+        # fetches by id, after `list_queue_candidates` has already filtered.
         return _Res([r for r in self._results if r.queue_state == "open"])
 
 

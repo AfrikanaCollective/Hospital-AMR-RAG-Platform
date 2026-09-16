@@ -29,10 +29,14 @@ from typing import TYPE_CHECKING
 from app.config import get_settings
 from app.db.models.eval import EvalQuestion
 from app.db.session import session_scope
+from app.eval.auto_seed import run_auto_seed_review_queue
 from app.eval.harness import run_harness
 from app.eval.question_gen.generate import QuestionGenerationFailed, generate_question
 from app.eval.question_gen.planner import Composition, allocate
+from app.logging import get_logger
 from app.worker import celery_app
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -117,3 +121,31 @@ def generate_questions(
 @celery_app.task(name="eval.run_harness")
 def run_harness_task(snapshot: str = "latest") -> None:
     run_harness(snapshot=snapshot)
+
+
+@celery_app.task(name="eval.auto_seed_review_queue")
+def auto_seed_review_queue_task() -> None:
+    """Enqueued from `app.main`'s FastAPI lifespan hook on every startup
+    when `QGEN_AUTO_SEED_ENABLED` (default true) — ARCH §14.2/§15;
+    DEVIATIONS.md #113. Runs in the worker, not inline in the API process,
+    so container startup is never blocked by N LLM calls + N full pipeline
+    runs. Idempotent (`run_auto_seed_review_queue` tops up to
+    `QGEN_AUTO_SEED_COUNT`, doesn't duplicate) and fails soft: a placeholder
+    `MODEL_ID` or a missing de-identified dataset logs a clear message and
+    returns rather than raising and being retried forever."""
+    settings = get_settings()
+    if not settings.qgen_auto_seed_enabled:
+        return
+    if settings.is_model_placeholder():
+        logger.warning(
+            "auto_seed_review_queue_task: MODEL_ID is the placeholder; skipping "
+            "review-queue auto-seeding until a real model id is configured."
+        )
+        return
+    with session_scope() as session:
+        run_auto_seed_review_queue(
+            session,
+            target_count=settings.qgen_auto_seed_count,
+            composition=settings.qgen_composition,
+            dataset_id=settings.qgen_auto_seed_dataset_id or None,
+        )

@@ -47,6 +47,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # real-Postgres check (none of which ever held a request-scoped
     # transaction open across a first-time checkpointer setup).
     get_checkpointer()
+    # Auto-seed the rubric review queue from de-identified records (ARCH
+    # §14.2/§15; DEVIATIONS.md #113) — enqueued here so it runs on every
+    # startup without blocking this container from becoming healthy; the
+    # worker (a separate container, already running) does the actual work.
+    # Never let a broker hiccup at startup crash the API.
+    if settings.qgen_auto_seed_enabled:
+        try:
+            from app.eval.tasks import auto_seed_review_queue_task  # noqa: PLC0415
+
+            auto_seed_review_queue_task.delay()
+        except Exception:  # noqa: BLE001 - best-effort; the API must still start
+            logger.warning("auto_seed_review_queue_task.delay() failed at startup", exc_info=True)
     yield
     close_checkpointer()
     logger.info("shutdown")

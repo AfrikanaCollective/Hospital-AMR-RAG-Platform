@@ -468,6 +468,118 @@ change needs a rebuild, not just a restart) and confirmed `GET
 /api/rubric/domains` live returns exactly the 11 new domains, correctly
 ordered, with the operator's own anchor text. See `DEVIATIONS.md` #112.
 
+**The review queue had no writer outside the fixed test set — closed with an
+auto-seed pipeline (2026-09-15).** Before this change, no code path ever
+created an `eval.Result` row except `app.eval.harness.run_harness`'s fixed
+synthetic test set — PRD-047 (hard cases in the review queue) and PRD-066
+(auto Q/A seeds the queue when clinician volume is low) were unimplementable
+as a result. `app/eval/auto_seed.py::run_auto_seed_review_queue` closes it:
+loads already-ingested, attested de-identified records
+(`app/eval/deidentified_source.py`), generates 60/20/20-stratified
+scope-1-framed narratives (existing planner/generator, now with ARCH
+§15.1 step 7's diversity filter actually enforced —
+`app/eval/question_gen/diversity.py`), runs each through the real query
+pipeline (the same `invoke_graph` path `POST /query` uses), and persists an
+immediately-`open` `eval.Result`. Runs from the worker, triggered from the
+API's startup hook (`QGEN_AUTO_SEED_ENABLED`, default on), idempotent
+(tops up to `QGEN_AUTO_SEED_COUNT`, never duplicates on restart), fails
+soft on a placeholder `MODEL_ID` or no de-identified data yet ingested.
+`GET /review-queue` also gained a visibility/priority rule ARCH §14.2 left
+undefined beyond the `<3`-raters cutoff: an in-progress (1-2 round) result
+is always offered before a fresh (0-round) one. Gold re-check (ARCH §15.1
+step 8) remains unimplemented. **517 passed** (was 498 at DEVIATIONS #112);
+one real test-harness regression (a hand-rolled fake DB session not yet
+taught the new queue query's shape) was found and fixed in the same pass.
+Not yet verified against a real Postgres/live gateway — offline-mocked only
+so far. See `DEVIATIONS.md` #113.
+
+**Auto-seed hardened: one record per scenario, cross-run diversity, default
+raised to 100 (2026-09-15, operator-directed).** `QGEN_AUTO_SEED_COUNT`'s
+default is now **100** (was 30). Two gaps #113 had already flagged as risk
+areas are closed: (1) a de-identified record could in principle source more
+than one scenario, since nothing tracked which records earlier runs had
+already used — `app.eval.auto_seed._used_patient_ids` now excludes every
+patient id already behind an auto-generated scenario, from any run, and a
+record used within the current run is excluded from the rest of that run
+too; (2) the near-duplicate filter's memory was scoped to a single run, so
+a top-up run (exactly what raising the default to 100 forces on any
+deployment already at 30) could re-accept a narrative near-duplicate of one
+already queued — each accepted narrative's embedding is now persisted
+(`EvalQuestion.generator_meta["embedding"]`) and reloaded to seed the
+filter at the start of every run. **522 passed** (was 517). Still not
+verified against a real Postgres/live gateway — same disclosed gap as
+#113, now covering these two additional queries too. See `DEVIATIONS.md`
+#114.
+
+**Verified end-to-end against a real Postgres and the real self-hosted
+gateway (2026-09-15) — three real bugs found and fixed.** (1) A `.env`
+parsing bug: a `KEY=   # comment` line (empty value, inline comment)
+silently becomes the *literal comment text*, not an empty string — three
+vars in `.env.example` had this shape (`LLM_GATEWAY_API_KEY`,
+`MODEL_ID_FALLBACKS`, `QGEN_AUTO_SEED_DATASET_ID`), and it broke
+`MODEL_ID_FALLBACKS` live, sending the comment text to the real gateway as
+a bogus model id — fixed by moving each comment above its assignment. (2)
+The whole `target_count`-scenario auto-seed run was one all-or-nothing
+transaction — real minutes and 100+ real gateway calls into a
+`target_count=100` run, nothing was visible to a reviewer or even a direct
+`psql` query — fixed with a commit per successfully generated scenario. (3)
+The narrative no-fabrication validator (PRD-061) rejected essentially every
+real narrative a real model produced: it correctly caught the model
+inferring an unstated diagnosis from listed medications (fixed with a
+targeted retry instruction, same pattern as DEVIATIONS #111), but its
+allowed-vocabulary list had also deliberately excluded ordinary vitals
+label words ("heart", "rate", "temperature"...), which are safe (the
+number they describe still has to match the record) and were blocking
+almost every vitals-bearing record — expanded. The core no-fabrication
+defense is unweakened — a genuine fabrication ("sepsis") was the very
+first real rejection caught, and still correctly rejects. Live-verified for
+the first time: one record never sources two scenarios (confirmed via real
+committed rows), the queue priority rule holds under real concurrent-ish
+reviewer activity (`reviewer2` was correctly offered only the in-progress
+item `reviewer1` had just rated, not a fresh one), a full 3-rater → IRR →
+archive cycle completed with real Krippendorff's alpha scores, and the
+audit hash chain stayed intact (`broken_chain_ids: []`) across the whole
+session. `QGEN_AUTO_SEED_COUNT=100`/`ENABLED=true` were left running in the
+background afterward — an idempotent, resumable job, not something this
+verification waited to fully complete. See `DEVIATIONS.md` #115.
+
+**The #115 background run had actually stalled, not just slowed
+(2026-09-16).** Asked to check progress the next day: still 17/100, not
+climbing. `docker compose logs worker` showed why — the last
+`auto_seed_review_queue_task` had crashed on an uncaught `ReadTimeout`
+(an earlier one had crashed on a `503`) ~12 hours earlier, and nothing
+reschedules a crashed task; it only runs again on an API restart. Root
+cause: no handling anywhere for a transient gateway/network error during
+embedding or the real pipeline invocation — only a content-quality
+rejection (`QuestionGenerationFailed`) was caught. Fixed: `httpx.HTTPError`
+and the gateway's own `LLMGatewayError` are now caught per attempt (skip to
+the next candidate, same as every other rejection reason), and every real
+network call now happens *before* any DB row is added, so a caught failure
+can never leave an orphaned `EvalQuestion` pending for a later commit to
+sweep in. **525 passed** (was 522). Rebuilt, redeployed `api`/`worker`/
+`proxy` together, and confirmed generation resumed — a fresh task received
+and making real successful gateway calls again. See `DEVIATIONS.md` #116.
+
+**Switched to local embeddings after a gateway-side connection-pool leak
+(2026-09-16).** `POST /v1/embeddings` on the real gateway started failing
+intermittently (`503`), traced to the gateway's own usage-logging DB
+connection pool being exhausted — a bug in the operator's separate gateway
+service, not this app. Switched this deployment's `EMBEDDING_BACKEND` from
+`gateway` to `local` (`EMBEDDING_MODEL_ID=BAAI/bge-large-en-v1.5`), closing
+the "not yet verified against real weights" gap `DEVIATIONS.md` #51 had
+flagged for this backend (unlike `RERANKER_BACKEND=local`, already verified
+live). Confirmed a real load produces 1024-dim vectors matching the existing
+Qdrant collection before switching. The existing 314-chunk guideline corpus
+was deleted and reprocessed in place (not through `reembed_corpus`, which
+remains an unimplemented stub, `DEVIATIONS.md` #60) so no mixed-embedding-
+space chunks remain — a real hybrid-search query confirmed retrieval still
+works. This also surfaced a real bug: the `local` backend returned numpy
+`float32` instead of native `float`, crashing `auto_seed_review_queue_task`
+the first time it ran for real (`TypeError: Object of type float32 is not
+JSON serializable`, writing an embedding into a JSONB column) — fixed at the
+source in `embed_texts`. **526 passed** (was 525). See `DEVIATIONS.md`
+#117/#118.
+
 ### Repository layout
 
 ```

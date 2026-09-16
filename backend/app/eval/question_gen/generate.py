@@ -64,6 +64,35 @@ _USER_TEMPLATE = """Patient presentation — the ONLY facts you may use:
 
 Write the one guideline-lookup question."""
 
+# DEVIATIONS.md #115: found live, against a real gateway model
+# (qwen3.5:9b) — the system prompt above already says "do not invent,
+# assume, or infer any finding... not listed," but the model still reached
+# a clinical impression not present in the record (e.g. medications
+# "gentamicin"/"penicillin" -> the word "sepsis", a diagnosis label no
+# field of that record actually stated) essentially every time; the retry
+# loop then sent the exact same prompt again, so the same bad instinct just
+# repeated across all `QGEN_MAX_RETRIES` attempts. This names the specific
+# words `validate_narrative` rejected on the previous attempt, the same
+# "name the exact wrong behavior" fix already used for the synthesis
+# agent's own retry suffix (DEVIATIONS.md #111), rather than a generic
+# restatement of the same rule the model already ignored once.
+_RETRY_SUFFIX_TEMPLATE = """
+
+STRICT: your previous question used word(s) not present in the patient
+presentation above, and not just a framing word: {unmapped}. You may not
+infer a diagnosis, condition, or clinical impression from what IS listed —
+for example, seeing an antibiotic does not mean you may name the infection
+it is typically used to treat. Rewrite the question using only the exact
+findings, medications, vitals, and demographics listed above, in
+approximately their own wording. It must still ask what the GUIDELINE
+recommends (the word "guideline" must appear) — do not drop that shape
+while fixing the wording above."""
+
+
+def _retry_suffix(unmapped: list[str]) -> str:
+    return _RETRY_SUFFIX_TEMPLATE.format(unmapped=", ".join(unmapped))
+
+
 # Any of these in the generated text means the model drifted from the
 # mandated shape (a directive/decision-seeking question) -> reject + retry.
 _SCOPE1_VIOLATION_PATTERNS: tuple[str, ...] = (
@@ -205,9 +234,12 @@ def generate_question(
     last_report: ValidatorReport | None = None
     last_text: str | None = None
     for attempt in range(retries + 1):
+        user_content = _USER_TEMPLATE.format(field_lines=field_lines)
+        if last_report is not None and last_report.unmapped_entities:
+            user_content += _retry_suffix(last_report.unmapped_entities)
         result = gw.chat(
             system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": _USER_TEMPLATE.format(field_lines=field_lines)}],
+            messages=[{"role": "user", "content": user_content}],
             temperature=0.2,
         )
         question_text = result.text.strip()

@@ -118,7 +118,14 @@ def embed_texts(texts: list[str], *, is_query: bool = False) -> list[list[float]
     if backend == "local":
         model = _get_local_model(settings.embedding_model_id)
         vectors = model.encode(prepared, normalize_embeddings=True)
-        return [list(v) for v in vectors]
+        # `.encode()` returns numpy float32 elements; cast to native Python
+        # float so every downstream consumer gets the same plain-float shape
+        # the "gateway"/"stub" branches already return (DEVIATIONS.md #118) —
+        # a numpy.float32 survives Qdrant's client encoding but is rejected
+        # outright by a plain `json.dumps` (e.g. an `EvalQuestion.generator_meta`
+        # JSONB write), found live via app.eval.auto_seed persisting an
+        # embedding straight into that column.
+        return [[float(x) for x in v] for v in vectors]
     if backend == "gateway":
         return _embed_via_gateway(prepared, settings)
     raise NotImplementedError(f"Unknown EMBEDDING_BACKEND={backend!r} (ARCH-004)")

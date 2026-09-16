@@ -176,6 +176,17 @@ class Settings(BaseSettings):
     qgen_composition: str = "60,20,20"  # well_supported,missing_info_expected,no_guideline_expected
     qgen_dedup_threshold: float = 0.92
     qgen_max_retries: int = 3
+    # Auto-seed the rubric review queue from de-identified records at
+    # startup (ARCH §14.2/§15; DEVIATIONS.md #113, #114) — enqueued from the
+    # API's lifespan hook, run by the worker. Idempotent: tops up to
+    # QGEN_AUTO_SEED_COUNT rather than duplicating on every restart. Each
+    # scenario is backed by a distinct de-identified record, never reused.
+    qgen_auto_seed_enabled: bool = True
+    qgen_auto_seed_count: int = 100
+    # Optional: restrict to one ingested de-identified dataset_id (e.g.
+    # "newborn_nbu_2021", `patient_record.dataset_id`). Empty = any
+    # data_class='deidentified' record.
+    qgen_auto_seed_dataset_id: str = ""
 
     # ── eval gating (§16) ──
     eval_min_precision_at_8: float = 0.70

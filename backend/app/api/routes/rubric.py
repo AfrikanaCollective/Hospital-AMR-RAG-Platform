@@ -9,6 +9,12 @@ POST /rubric/results/{result_id}/ratings      (reviewer) -> one rating_round: 11
       (rating_round UNIQUE (result_id, rater_id)).
 GET  /rubric/results/{result_id}              -> rating history + IRR (once archived)
 IRR per domain computed at >= IRR_MIN_RATERS distinct raters, then archived.
+
+The queue LISTING itself is `GET /review-queue`
+(`app.api.routes.review_queue`), not here — it predates this module's own
+`/rubric/results/{id}` detail/rating endpoints and the frontend already
+calls it (`ReviewPage.tsx`); DEVIATIONS.md #113 extended it with the
+priority rule rather than adding a second, competing queue endpoint.
 """
 
 from __future__ import annotations

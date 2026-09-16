@@ -54,6 +54,14 @@ class EvalQuestion(UUIDPk, TimestampMixin, Base):
     in_fixed_testset: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+def result_answer_aad(result_id: uuid.UUID) -> bytes:
+    """AAD for `Result.answer_enc` — the shared read/write contract between
+    the writer (`app.eval.auto_seed._build_result`) and the reader
+    (`app.api.routes.review_queue.get_queue_item`), defined once here so
+    they cannot drift apart (DEVIATIONS.md #79, #113)."""
+    return b"eval-result-answer:" + str(result_id).encode("utf-8")
+
+
 class Result(UUIDPk, TimestampMixin, Base):
     """id == result_id referenced by ratings (ARCH §4.5)."""
 
