@@ -739,6 +739,44 @@ RRF (production's current fusion) sits mid-pack (≈0.157), never best, never
 worst. No alpha robustly beats RRF, so **Phase 7 (production fusion-weight
 adoption) is not triggered** — ARCH-003's RRF fusion stands unmodified.
 
+**Biomedical embedding ablation — SapBERT / MedCPT vs. BM25 (approved and
+run 2026-09-17, `PHASE2-EMBEDDING-ABLATION-PROPOSAL.md`).** Evidence-
+gathering for a *possible* future Phase 2 reopening, not the reopening
+itself — fully offline, no production/schema change: `app/eval/model_ablation/`
+brute-force-ranks the same 314-chunk live guideline corpus (no ANN, no new
+Qdrant vectors persisted) with SapBERT and MedCPT (two dual-encoder
+checkpoints, query + article), client-side RRF-combines each with the
+existing BM25 sparse vector across three arms (`sapbert_bm25`,
+`medcpt_bm25`, `sapbert_medcpt_bm25`), and scores against the same 67
+gold-labeled calibration questions Phase 6 uses. `make model-ablation-report`
+(`scripts/run_model_ablation.py`) produces a 2-panel PNG report; new
+`MODEL_ABLATION_BACKEND`/`SAPBERT_*`/`MEDCPT_*` config is read only by this
+tooling, never by production. One real bug found only by real data (a
+guideline chunk's tokenized length exceeded the encoder's position-embedding
+limit and crashed instead of truncating, absent an explicit `max_length`) —
+fixed. Both models' HuggingFace repo ids resolved successfully on a real
+run; pooling method (`[CLS]`-token) remains unverified against each model's
+current card. **Real result** (67 questions, same corpus, single run):
+SapBERT+BM25 leads on MRR@24 (≈0.18) over the freshly-recomputed production
+RRF baseline (≈0.16); MedCPT+BM25 underperforms it (≈0.10); the 3-way
+combination sits close to, slightly below, RRF (≈0.14). Recall@k for all
+three arms tracks closely with RRF and converges to the same ≈0.68 ceiling.
+SapBERT is the more promising candidate on this run, but N=67/one
+corpus/one run does not meet the "robustly improves over RRF" bar this
+proposal's own §8 set — **a Phase-2-reopening proposal is not triggered**.
+Full account in `DEVIATIONS.md` #131.
+
+**Panel B → dot plot with 95% bootstrap CIs (2026-09-17, follow-up
+request).** `chart_mrr_by_arm` now draws each arm's MRR@24 as a point with
+a percentile-bootstrap 95% CI error bar (10,000 resamples, fixed seed) in
+place of a plain bar. This made the uncertainty explicit: **all four arms'
+intervals overlap substantially** (SapBERT+BM25 ≈0.18 [≈0.13, ≈0.24];
+MedCPT+BM25 ≈0.10 [≈0.07, ≈0.14]; SapBERT+MedCPT+BM25 ≈0.14 [≈0.10, ≈0.19];
+RRF ≈0.16 [≈0.12, ≈0.22]) — confirming with an actual interval, not just
+prose caution, that SapBERT's higher point estimate isn't statistically
+distinguishable from the RRF baseline at this sample size. See
+`DEVIATIONS.md` #132.
+
 ### Repository layout
 
 ```
@@ -911,6 +949,7 @@ cd ../frontend && npm install && npm run dev
 | `make lock` | regenerate `backend/requirements-lock.txt` from `pyproject.toml` (PRD-NFR-3 / DEVIATIONS.md #45) — run after changing dependencies, never hand-edit the lock |
 | `make eval` | run the evaluation harness against the fixed synthetic test set |
 | `make retrieval-tuning-report` | Phase 6 BM25/vector weight × depth sweep → 1 combined 3-panel PNG report, 18cm×21cm @ 600dpi (PRD-109/ARCH-040); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra (`pip install -e .[retrieval-tuning]`) |
+| `make model-ablation-report` | SapBERT/MedCPT/BM25 embedding ablation → 1 combined 2-panel PNG report (PRD-110/ARCH-041); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and `MODEL_ABLATION_BACKEND=local` for real (non-stub) models |
 
 ---
 

@@ -105,6 +105,21 @@ class Settings(BaseSettings):
     reranker_batch_size: int = 16
     reranker_max_length: int = 512  # truncation length for (query, chunk) pairs
 
+    # ── model-ablation harness only (PRD-110 / ARCH-041,
+    # PHASE2-EMBEDDING-ABLATION-PROPOSAL.md) — biomedical embedding models
+    # (SapBERT, MedCPT) evaluated offline against the live guideline corpus.
+    # NOT read by any production/answer-path code — analysis tooling only,
+    # so an unverified id here warns (at ablation run time, not app startup)
+    # rather than blocking. Repo ids and pooling method are UNVERIFIED
+    # against each model's current card (§6 of the proposal) — confirm
+    # before relying on a real (non-stub) run's numbers.
+    model_ablation_backend: str = "stub"  # stub | local
+    sapbert_model_id: str = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
+    sapbert_model_verified: bool = False
+    medcpt_query_model_id: str = "ncbi/MedCPT-Query-Encoder"
+    medcpt_article_model_id: str = "ncbi/MedCPT-Article-Encoder"
+    medcpt_model_verified: bool = False
+
     # ── retrieval (ARCH-003 / §7) ──
     candidate_k: int = 40
     fused_k: int = 24

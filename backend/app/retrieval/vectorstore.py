@@ -171,3 +171,26 @@ class QdrantVectorStore:
             with_payload=True,
         )
         return [{"id": str(pt.id), "score": pt.score, **(pt.payload or {})} for pt in result.points]
+
+    def scroll_all(self, *, page_size: int = 256) -> list[dict]:
+        """Every point's payload, no vector, no query — a full corpus dump.
+
+        Used only by the model-ablation harness (ARCH-041,
+        `app.eval.model_ablation`) to embed the whole guideline corpus with a
+        new encoder in memory; only feasible because that corpus is small
+        (314 points on the live collection, 2026-09-17). Production retrieval
+        never calls this — it stays on `hybrid_search`."""
+        points: list[dict] = []
+        offset = None
+        while True:
+            batch, offset = self._client.scroll(
+                collection_name=self.collection,
+                limit=page_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points.extend({"id": str(pt.id), **(pt.payload or {})} for pt in batch)
+            if offset is None:
+                break
+        return points

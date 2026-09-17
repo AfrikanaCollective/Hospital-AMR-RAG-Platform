@@ -5,7 +5,7 @@ BE      ?= cd backend &&
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
         prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock \
-        retrieval-tuning-report
+        retrieval-tuning-report model-ablation-report
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -64,3 +64,9 @@ retrieval-tuning-report: ## Phase 6 BM25/vector weight sweep -> 1 combined 3-pan
 	# into the api/worker image (report-generation tooling only, not needed by any running service) —
 	# installed here on demand instead of bloating the shared image/lock file for every build.
 	$(BE) pip install -q -e ".[retrieval-tuning]" && python -m scripts.run_retrieval_weight_sweep
+
+model-ablation-report: ## SapBERT/MedCPT/BM25 embedding ablation -> 2-panel PNG report (PRD-110/ARCH-041); needs real Qdrant+Postgres+seeded eval questions; set MODEL_ABLATION_BACKEND=local for real (non-stub) models
+	# retrieval-tuning: chart libs. local-models: sentence-transformers/torch, needed only when
+	# MODEL_ABLATION_BACKEND=local (the default, "stub", needs neither — see
+	# PHASE2-EMBEDDING-ABLATION-PROPOSAL.md).
+	$(BE) pip install -q -e ".[retrieval-tuning,local-models]" && python -m scripts.run_model_ablation
