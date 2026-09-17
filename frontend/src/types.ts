@@ -107,8 +107,16 @@ export interface QueueResultDetail {
   result_id: string;
   provenance: string;
   expected_outcome: string | null;
+  // The auto-generated (or clinician-submitted) question this result
+  // answers; null for a result with no linked `eval_question` row
+  // (DEVIATIONS.md #120).
+  question: string | null;
   answer: string | null;
-  citations: unknown[];
+  // Per-segment citation_ids for inline rendering (DEVIATIONS.md #120);
+  // null for a result written before this existed, or an escalated result
+  // with no released answer — callers fall back to `answer`/`citations`.
+  segments: AnswerSegment[] | null;
+  citations: Citation[];
   grounding_report: Record<string, unknown>;
 }
 

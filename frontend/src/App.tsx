@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import QueryPage from "./pages/QueryPage";
 import ReviewPage from "./pages/ReviewPage";
+import EscalationsPage from "./pages/EscalationsPage";
 import LoginPage from "./pages/LoginPage";
 import DisclaimerBanner from "./components/DisclaimerBanner";
 import { AuthProvider } from "./AuthContext";
@@ -28,6 +29,7 @@ function Shell() {
           <nav style={{ display: "flex", gap: 12 }}>
             <Link to="/">Query</Link>
             {canReview && <Link to="/review">Review queue</Link>}
+            {canReview && <Link to="/escalations">Escalations</Link>}
           </nav>
         )}
         <span style={{ marginLeft: "auto", fontSize: 13, color: "#666" }}>
@@ -62,6 +64,14 @@ function Shell() {
           element={
             <RequireAuth>
               <ReviewPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/escalations"
+          element={
+            <RequireAuth>
+              <EscalationsPage />
             </RequireAuth>
           }
         />

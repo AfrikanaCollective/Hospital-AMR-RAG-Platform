@@ -140,3 +140,34 @@ class QdrantVectorStore:
     def get_by_ids(self, ids: list[str]) -> list[dict]:
         records = self._client.retrieve(collection_name=self.collection, ids=ids, with_payload=True)
         return [{"id": str(r.id), **(r.payload or {})} for r in records]
+
+    def single_vector_search(
+        self,
+        *,
+        using: str,
+        query: list[float] | dict[str, list],
+        limit: int,
+        flt: dict | None = None,
+    ) -> list[dict]:
+        """One named vector only (`"dense"` or `"sparse"`), no fusion.
+
+        Used only by the offline BM25/vector weight-sweep tooling (ARCH-040,
+        `app.eval.retrieval_tuning`) to get each signal's own ranked
+        candidates for a client-side weighted combine. Production retrieval
+        never calls this — it stays on `hybrid_search`'s server-side RRF
+        fusion (ARCH-003)."""
+        qfilter = _build_filter(flt) if flt else None
+        q: list[float] | qm.SparseVector
+        if isinstance(query, dict):
+            q = qm.SparseVector(indices=query["indices"], values=query["values"])
+        else:
+            q = query
+        result = self._client.query_points(
+            collection_name=self.collection,
+            query=q,
+            using=using,
+            limit=limit,
+            query_filter=qfilter,
+            with_payload=True,
+        )
+        return [{"id": str(pt.id), "score": pt.score, **(pt.payload or {})} for pt in result.points]

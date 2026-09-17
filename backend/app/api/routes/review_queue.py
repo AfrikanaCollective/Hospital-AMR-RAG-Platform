@@ -26,6 +26,7 @@ same `Result.answer_enc` AAD contract (`app.db.models.eval.result_answer_aad`).
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -34,7 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import Principal, get_db, principal_uuid, require_role
 from app.crypto.provider import get_crypto
-from app.db.models.eval import Result, result_answer_aad
+from app.db.models.eval import EvalQuestion, Result, result_answer_aad, result_segments_aad
 from app.rubric.workflow import list_queue_candidates, select_queue_items
 
 router = APIRouter()
@@ -78,10 +79,32 @@ async def get_queue_item(
     if result is None or result.queue_state == "not_queued":
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"no queued result {result_id}")
 
+    crypto = get_crypto()
     answer = None
     if result.answer_enc is not None:
-        crypto = get_crypto()
         answer = crypto.decrypt(result.answer_enc, aad=result_answer_aad(result.id)).decode("utf-8")
+
+    # Per-segment citation_ids, so the UI can link a citation to the specific
+    # claim it supports instead of only listing citations below a flat answer
+    # paragraph (DEVIATIONS.md #120). Absent for a result written before this
+    # column existed, or for an escalated result with no released answer —
+    # the caller falls back to the flat `answer` text in that case.
+    segments = None
+    if result.answer_segments_enc is not None:
+        segments = json.loads(
+            crypto.decrypt(result.answer_segments_enc, aad=result_segments_aad(result.id)).decode(
+                "utf-8"
+            )
+        )
+
+    # The generated question this result answers — an auto-generated
+    # scenario had no way to show a reviewer what was actually asked
+    # (DEVIATIONS.md #120); `None` for a `clinician_submitted` result with no
+    # linked `eval_question` row.
+    question = None
+    if result.eval_question_id is not None:
+        eval_question = session.get(EvalQuestion, result.eval_question_id)
+        question = eval_question.text if eval_question is not None else None
 
     # No other raters' scores exposed here — independence of the rank-mode
     # rating (ARCH §14.2): a reviewer's own score must not be anchored on a
@@ -90,7 +113,9 @@ async def get_queue_item(
         "result_id": result_id,
         "provenance": result.provenance,
         "expected_outcome": result.expected_outcome,
+        "question": question,
         "answer": answer,
+        "segments": segments,
         "citations": result.citations,
         "grounding_report": result.grounding_report,
     }

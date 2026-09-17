@@ -4,7 +4,8 @@ PROFILE ?= dev
 BE      ?= cd backend &&
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
-        prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock
+        prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock \
+        retrieval-tuning-report
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -57,3 +58,9 @@ lock: ## regenerate backend/requirements-lock.txt from pyproject.toml (PRD-NFR-3
 
 eval: ## run the evaluation harness against the fixed synthetic test set
 	$(BE) python -m app.eval.run --snapshot latest
+
+retrieval-tuning-report: ## Phase 6 BM25/vector weight sweep -> 1 combined 3-panel PNG report (PRD-109/ARCH-040); needs real Qdrant+Postgres+seeded eval questions
+	# seaborn/pandas/matplotlib are the `retrieval-tuning` optional extra, deliberately NOT baked
+	# into the api/worker image (report-generation tooling only, not needed by any running service) —
+	# installed here on demand instead of bloating the shared image/lock file for every build.
+	$(BE) pip install -q -e ".[retrieval-tuning]" && python -m scripts.run_retrieval_weight_sweep

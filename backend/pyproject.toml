@@ -57,6 +57,14 @@ local-models = [
     "sentence-transformers>=3.3",
     "torch>=2.5",
 ]
+# Phase 6 retrieval-tuning report generation only (PRD-109 / ARCH-040,
+# app/eval/retrieval_tuning/report.py, scripts/run_retrieval_weight_sweep.py).
+# Not needed to run the app or the rest of the test suite.
+retrieval-tuning = [
+    "seaborn>=0.13",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+]
 
 [tool.ruff]
 line-length = 100

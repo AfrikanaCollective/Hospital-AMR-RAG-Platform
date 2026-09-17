@@ -1,6 +1,5 @@
 import type { QueryResponse } from "../types";
-import CitationList from "./CitationList";
-import { renumberForDisplay } from "../citations";
+import AnswerSegments from "./AnswerSegments";
 
 // Renders a released answer (segments + citations) OR an escalation notice.
 // Never renders an ungrounded answer (backend guarantees this — PRD-NFR-2).
@@ -26,30 +25,5 @@ export default function AnswerView({ resp }: { resp: QueryResponse }) {
     );
   }
 
-  // Backend citation_ids are retrieval-rank labels (c1 = top-ranked chunk),
-  // not order-of-use — a real answer can legitimately cite c1, c2, c7 with
-  // c3-c6 unused. Renumbered here, for display only, to sequential order of
-  // first appearance so the reader never sees a citation list that looks
-  // like it's missing entries (see ../citations.ts).
-  const { segments, citations } = renumberForDisplay(resp.segments, resp.citations);
-
-  return (
-    <div>
-      <div style={{ lineHeight: 1.5 }}>
-        {segments.map((seg, i) => (
-          <span key={i} style={{ background: seg.type === "framing" ? "transparent" : "#eef6ff" }}>
-            {seg.text}
-            {seg.citation_ids.map((cid) => (
-              <sup key={cid}>
-                <a href={`#cite-${cid}`}>[{cid}]</a>
-              </sup>
-            ))}
-            {seg.grounding_note ? <em style={{ color: "#a15c00" }}> ({seg.grounding_note})</em> : null}{" "}
-          </span>
-        ))}
-      </div>
-      <h4>Citations</h4>
-      <CitationList citations={citations} />
-    </div>
-  );
+  return <AnswerSegments segments={resp.segments} citations={resp.citations} />;
 }

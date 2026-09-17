@@ -73,6 +73,7 @@ accidentally sweep in.
 
 from __future__ import annotations
 
+import json
 import random
 import uuid
 from typing import TYPE_CHECKING
@@ -82,7 +83,7 @@ from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.crypto.provider import get_crypto
-from app.db.models.eval import EvalQuestion, Result, result_answer_aad
+from app.db.models.eval import EvalQuestion, Result, result_answer_aad, result_segments_aad
 from app.eval.deidentified_source import load_deidentified_records
 from app.eval.question_gen.diversity import is_near_duplicate
 from app.eval.question_gen.generate import QuestionGenerationFailed, generate_question
@@ -150,14 +151,26 @@ def _existing_accepted_embeddings(session: Session) -> list[list[float]]:
     installations that ran the auto-seed pipeline before this fix, which per
     DEVIATIONS.md #113 was `QGEN_AUTO_SEED_COUNT=30`, a small, one-time,
     disclosed gap, not one this change silently re-introduces going
-    forward)."""
+    forward).
+
+    Also skips a row whose `"embedding_model_id"` doesn't match the
+    currently configured `EMBEDDING_MODEL_ID` (DEVIATIONS.md #119) — a stale
+    embedding from a since-replaced model is not directly comparable by
+    cosine similarity to one from the current model, and including it
+    produced unreliable near-duplicate results (found live when this
+    deployment switched `EMBEDDING_BACKEND` gateway -> local mid-generation).
+    A row from before #119 has no `"embedding_model_id"` key either and is
+    skipped the same way — same disclosed, non-silent gap as the paragraph
+    above, not a new one."""
     stmt = select(EvalQuestion.generator_meta).where(
         EvalQuestion.provenance == Provenance.AUTO_GENERATED.value
     )
+    current_model_id = get_settings().embedding_model_id
     out: list[list[float]] = []
-    for meta in session.execute(stmt).scalars().all():
-        embedding = (meta or {}).get("embedding")
-        if embedding:
+    for raw_meta in session.execute(stmt).scalars().all():
+        meta = raw_meta or {}
+        embedding = meta.get("embedding")
+        if embedding and meta.get("embedding_model_id") == current_model_id:
             out.append(embedding)
     return out
 
@@ -263,6 +276,13 @@ def _generate_one_scenario(
 
     generator_meta = dict(generated.get("generator_meta") or {})
     generator_meta["embedding"] = embedding
+    # Which model produced `embedding` above — read back by
+    # `_existing_accepted_embeddings` so a later switch of `EMBEDDING_MODEL_ID`
+    # can't silently compare across two different embedding spaces
+    # (DEVIATIONS.md #119: found live — mixing a `qllama/bge-large-en-v1.5`-gateway
+    # embedding with a `BAAI/bge-large-en-v1.5`-local one in the same
+    # cosine-similarity comparison produced unreliable near-duplicate results).
+    generator_meta["embedding_model_id"] = get_settings().embedding_model_id
     question = EvalQuestion(
         text=generated["text"],
         provenance=generated["provenance"],
@@ -275,12 +295,31 @@ def _generate_one_scenario(
     session.add(question)
     session.flush()
 
-    result, answer_text = _build_result(question, out)
+    result, answer_text, segment_dicts = _build_result(question, out)
+    # PRD-109/ARCH-040 (Phase 6) found this scenario's own real, grounding-
+    # verified citations (`result.citations`, just computed above) were
+    # never written back onto the question that produced them —
+    # `EvalQuestion.gold_relevant_chunks` (read by both `app.eval.harness`'s
+    # retrieval precision/recall and the Phase 6 sweep) was silently `None`
+    # for every auto-seeded row, so those metrics had never actually been
+    # computed for anything (DEVIATIONS.md #122). This question's own
+    # verified citation chunk ids are exactly its gold set: they're what the
+    # real pipeline retrieved AND the grounding gate verified for THIS
+    # specific generated question. `_build_result` leaves `citations` empty
+    # when the turn escalated instead of releasing an answer — no gold set
+    # to record in that case, consistent with the field's `None` default.
+    if result.citations:
+        question.gold_relevant_chunks = sorted({c["chunk_id"] for c in result.citations})
     session.add(result)
     session.flush()  # materializes result.id, needed as the encryption AAD below
+    crypto = get_crypto()
     if answer_text is not None:
-        result.answer_enc = get_crypto().encrypt(
+        result.answer_enc = crypto.encrypt(
             answer_text.encode("utf-8"), aad=result_answer_aad(result.id)
+        )
+    if segment_dicts is not None:
+        result.answer_segments_enc = crypto.encrypt(
+            json.dumps(segment_dicts).encode("utf-8"), aad=result_segments_aad(result.id)
         )
     # Commit per scenario, not once at the end of the whole run (DEVIATIONS.md
     # #115): a `target_count` in the dozens means real minutes of real LLM
@@ -326,25 +365,31 @@ def _observed_outcome_value(out: dict) -> str:
     return observed.value if hasattr(observed, "value") else str(observed)
 
 
-def _build_result(question: EvalQuestion, out: dict) -> tuple[Result, str | None]:
+def _build_result(
+    question: EvalQuestion, out: dict
+) -> tuple[Result, str | None, list[dict] | None]:
     """Map the compiled graph's raw output onto `eval.Result` columns — the
     same shape `app.agents.query_pipeline.assemble_and_persist_response`
     reads to build the live `/query` response, reused here for this
     offline/batch path (DEVIATIONS.md #113). Returns the row (with
-    `answer_enc` still unset) alongside the plaintext answer text — the
-    caller flushes first (materializing `Result.id`, needed as the
-    encryption AAD per `app.db.models.eval.result_answer_aad`) and encrypts
-    after, the same flush-then-encrypt order `app.hitl.decisions._create_hitl_decision`
-    already uses for `edited_answer_enc`."""
+    `answer_enc`/`answer_segments_enc` still unset) alongside the plaintext
+    answer text and the segment list (`AnswerSegment` dicts, DEVIATIONS.md
+    #120) — the caller flushes first (materializing `Result.id`, needed as
+    the encryption AAD per `app.db.models.eval.result_answer_aad`/
+    `result_segments_aad`) and encrypts after, the same flush-then-encrypt
+    order `app.hitl.decisions._create_hitl_decision` already uses for
+    `edited_answer_enc`."""
     settings = get_settings()
 
     citations: list[dict] = []
     answer_text: str | None = None
+    segment_dicts: list[dict] | None = None
     if not out.get("escalation"):
         final = out.get("final_answer") or {}
         segments = [AnswerSegment(**seg) for seg in final.get("segments", [])]
         citations = [Citation(**c).model_dump(mode="json") for c in final.get("citations", [])]
         answer_text = "\n".join(s.text for s in segments)
+        segment_dicts = [s.model_dump(mode="json") for s in segments]
 
     result = Result(
         eval_question_id=question.id,
@@ -363,7 +408,7 @@ def _build_result(question: EvalQuestion, out: dict) -> tuple[Result, str | None
         },
         queue_state="open",  # visible in the review queue immediately (not "not_queued")
     )
-    return result, answer_text
+    return result, answer_text, segment_dicts
 
 
 def run_auto_seed_review_queue(

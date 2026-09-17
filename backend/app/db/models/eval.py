@@ -62,6 +62,14 @@ def result_answer_aad(result_id: uuid.UUID) -> bytes:
     return b"eval-result-answer:" + str(result_id).encode("utf-8")
 
 
+def result_segments_aad(result_id: uuid.UUID) -> bytes:
+    """AAD for `Result.answer_segments_enc` — deliberately distinct from
+    `result_answer_aad` (a different label, same `result_id`) so the two
+    ciphertexts, despite overlapping plaintext, are never valid for each
+    other's slot (DEVIATIONS.md #120)."""
+    return b"eval-result-segments:" + str(result_id).encode("utf-8")
+
+
 class Result(UUIDPk, TimestampMixin, Base):
     """id == result_id referenced by ratings (ARCH §4.5)."""
 
@@ -78,6 +86,7 @@ class Result(UUIDPk, TimestampMixin, Base):
         String(16)
     )  # well_supported | missing_info | no_guideline | escalated
     answer_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    answer_segments_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     citations: Mapped[list] = mapped_column(JSONB, default=list)
     retrieval_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
     grounding_report: Mapped[dict] = mapped_column(JSONB, default=dict)

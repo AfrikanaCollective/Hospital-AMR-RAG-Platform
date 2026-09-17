@@ -3,6 +3,7 @@ DEVIATIONS.md #113)."""
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -223,6 +224,32 @@ def test_escalated_pipeline_output_persists_with_no_answer_or_citations(
     assert result.observed_outcome == "escalated"
     assert result.citations == []
     assert result.answer_enc is None
+    assert result.answer_segments_enc is None
+    assert session.questions[0].gold_relevant_chunks is None
+
+
+def test_wellsupported_scenario_persists_its_own_citations_as_gold_relevant_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEVIATIONS.md #122: `EvalQuestion.gold_relevant_chunks` was never
+    written by anything — `app.eval.harness`'s retrieval precision/recall
+    and the Phase 6 sweep (PRD-109/ARCH-040) both read it, but it was
+    silently `None` for every auto-seeded row. This scenario's own real,
+    grounding-verified citations are its gold set."""
+    monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_RECORDS_FN",
+        lambda *a, **k: [(RECORD_ID, RECORD)],  # noqa: ARG005
+    )
+    monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[1.0, 0.0] for _ in texts])  # noqa: ARG005
+    monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _well_supported_pipeline_output)
+
+    session = _FakeSession()
+    auto_seed.run_auto_seed_review_queue(
+        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+    )
+    assert session.questions[0].gold_relevant_chunks == ["chunk-1"]
 
 
 def test_transient_gateway_error_during_pipeline_invocation_skips_the_attempt(
@@ -436,7 +463,11 @@ def test_persists_the_narratives_embedding_in_generator_meta(
 ) -> None:
     """`generator_meta["embedding"]` is what `_EXISTING_EMBEDDINGS_FN` reads
     back on a later run (DEVIATIONS.md #114) — verify it's actually written,
-    alongside the generator's own existing metadata keys."""
+    alongside the generator's own existing metadata keys. `embedding_model_id`
+    is also persisted (DEVIATIONS.md #119) so a later switch of
+    `EMBEDDING_MODEL_ID` can tell this embedding's space apart from a fresh
+    one's, rather than silently comparing across two different models'
+    embedding spaces (found live, DEVIATIONS.md #119)."""
     monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
     monkeypatch.setattr(
         auto_seed,
@@ -445,13 +476,21 @@ def test_persists_the_narratives_embedding_in_generator_meta(
     )
     monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[3.0, 4.0] for _ in texts])  # noqa: ARG005
     monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _well_supported_pipeline_output)
+    monkeypatch.setenv("EMBEDDING_MODEL_ID", "some/test-embedding-model")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
 
     session = _FakeSession()
-    auto_seed.run_auto_seed_review_queue(
-        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
-    )
+    try:
+        auto_seed.run_auto_seed_review_queue(
+            session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+        )
+    finally:
+        get_settings.cache_clear()
     meta = session.questions[0].generator_meta
     assert meta["embedding"] == [3.0, 4.0]
+    assert meta["embedding_model_id"] == "some/test-embedding-model"
     assert (
         meta["model_id"] == "fake-model"
     )  # the generator's own metadata is preserved, not replaced
@@ -477,8 +516,23 @@ def test_well_supported_result_answer_decrypts_to_the_rendered_segments(
     )
     result = session.results[0]
     crypto = get_crypto()
-    from app.db.models.eval import result_answer_aad
+    from app.db.models.eval import result_answer_aad, result_segments_aad
 
     plaintext = crypto.decrypt(result.answer_enc, aad=result_answer_aad(result.id))
     assert plaintext.decode("utf-8") == "Example Guideline recommends X."
     assert result.citations[0]["citation_id"] == "c1"
+
+    # DEVIATIONS.md #120: the per-segment citation_ids, needed for the
+    # review-queue UI to link a citation inline to the claim it supports,
+    # are now persisted alongside the flattened answer text, not discarded.
+    segments = json.loads(
+        crypto.decrypt(result.answer_segments_enc, aad=result_segments_aad(result.id))
+    )
+    assert segments == [
+        {
+            "type": "claim",
+            "text": "Example Guideline recommends X.",
+            "citation_ids": ["c1"],
+            "grounding_note": None,
+        }
+    ]

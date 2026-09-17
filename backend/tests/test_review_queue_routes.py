@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -9,19 +10,26 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import Principal, current_principal, get_db
-from app.db.models.eval import RatingRound, Result
+from app.db.models.eval import EvalQuestion, RatingRound, Result
 from app.main import app as fastapi_app
 
 RATER_ID = uuid.uuid4()
 
 
 class _FakeSession:
-    def __init__(self, results: list[Result], rounds: list[RatingRound]) -> None:
+    def __init__(
+        self,
+        results: list[Result],
+        rounds: list[RatingRound],
+        questions: list[EvalQuestion] | None = None,
+    ) -> None:
         self._results = results
         self._rounds = rounds
+        self._questions = questions or []
 
-    def get(self, model: object, pk: object) -> object:  # noqa: ARG002
-        return next((r for r in self._results if r.id == pk), None)
+    def get(self, model: object, pk: object) -> object:
+        rows = self._questions if model is EvalQuestion else self._results
+        return next((r for r in rows if r.id == pk), None)
 
     def execute(self, stmt: object) -> object:
         descriptions = stmt.column_descriptions  # type: ignore[attr-defined]
@@ -129,8 +137,59 @@ def test_get_queue_item_hides_other_raters_scores(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["citations"] == [{"citation_id": "c1"}]
+    assert body["question"] is None
+    assert body["segments"] is None
     assert "scores" not in body
     assert "rater_id" not in body
+
+
+def test_get_queue_item_includes_generated_question_and_segments(client: TestClient) -> None:
+    """The review-queue detail view surfaces the auto-generated question the
+    result answers, and the per-segment citation_ids the answer's inline
+    citations need (DEVIATIONS.md #120) — both absent before this change."""
+    from app.crypto.provider import get_crypto
+    from app.db.models.eval import result_answer_aad, result_segments_aad
+
+    question = EvalQuestion(
+        id=uuid.uuid4(),
+        text="A 3-day-old neonate has a fever of 38.5C. What does the guideline recommend?",
+        provenance="auto_generated",
+        expected_outcome="well_supported",
+    )
+    result_id = uuid.uuid4()
+    crypto = get_crypto()
+    segments = [
+        {
+            "type": "claim",
+            "text": "Neonates with signs of sepsis should be treated with ampicillin.",
+            "citation_ids": ["c1"],
+            "grounding_note": None,
+        }
+    ]
+    result = Result(
+        id=result_id,
+        eval_question_id=question.id,
+        provenance="auto_generated",
+        queue_state="open",
+        answer_enc=crypto.encrypt(
+            b"Neonates with signs of sepsis should be treated with ampicillin.",
+            aad=result_answer_aad(result_id),
+        ),
+        answer_segments_enc=crypto.encrypt(
+            json.dumps(segments).encode("utf-8"), aad=result_segments_aad(result_id)
+        ),
+        citations=[{"citation_id": "c1"}],
+        grounding_report={"action": "release"},
+        created_at=datetime.now(UTC),
+    )
+    session = _FakeSession([result], [], questions=[question])
+    fastapi_app.dependency_overrides[get_db] = lambda: session
+
+    resp = client.get(f"/api/review-queue/{result.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["question"] == question.text
+    assert body["segments"] == segments
 
 
 def test_get_queue_item_not_queued_is_404(client: TestClient) -> None:
