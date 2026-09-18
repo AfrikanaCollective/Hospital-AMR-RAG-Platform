@@ -27,7 +27,7 @@ evaluation workflow.
 | **2** | Ingestion & hybrid retrieval core | ✅ complete (Checkpoint 2 approved 2026-09-14) |
 | **3** | Multi-agent orchestration & HITL | ✅ complete (Checkpoint 3 approved 2026-09-14) |
 | **4** | API & backend hardening | ✅ complete (Checkpoint 4 approved 2026-09-14) |
-| **5** | React frontend | ✅ complete (Checkpoint 5 approved 2026-09-14) |
+| **5** | React frontend | 🔄 reopened 2026-09-17 (accessibility/contrast pass, WCAG 2.2 AA; original Checkpoint 5 approved 2026-09-14) |
 | **6** | Hybrid retrieval weight & depth calibration | ✅ complete (Checkpoint 6 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)) |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
@@ -621,6 +621,51 @@ regressed a tracked requirement; a new "Escalations" nav link (same
 `reviewer`/`admin` gate as "Review queue") replaces the old stacked section.
 **527 passed** (was 526); `npm run build`/`npm run lint` clean. See
 `DEVIATIONS.md` #120.
+
+**Phase 5 reopened (2026-09-17) — WCAG 2.2 AA contrast/accessibility pass.**
+Operator requested a contrast/visibility audit against the real rendered
+frontend, then approved wiring up Tailwind CSS v4 + Radix UI primitives and
+rebuilding the rank-mode rubric as a mobile-first, one-domain-per-screen
+wizard. `frontend/src/index.css` now carries the audited color tokens
+(`ink`/`ink-muted` replacing the prior `#666`/`#888`/`#999` — two of which
+measured below WCAG AA's 4.5:1 against the app's actual colors; `accent`/
+`accent-strong` teal; `danger` red reserved for `reject`/`out_of_scope`
+only); every component's inline `style={}` was converted to Tailwind
+utilities against these tokens, and a shared `components/ui/Button.tsx`
+centralizes hover/active/disabled/focus styling. `RubricForm.tsx` is now a
+stepper (progress bar, collapsible domain definition + all 5 anchors, a
+collapsible "view answer and citations" panel, a 52px segmented 1–5
+control, a sticky bottom Back/Next bar) ending in a dedicated accept-axis
+step with large `reject`/`out_of_scope`-danger-coded cards
+(`AcceptAxisControls.tsx`, shared with the standalone escalation-decision
+form). Unlike Phase 5's original close, this pass **was** verified by
+actually driving the rendered app in real Chrome — and that caught two real
+correctness bugs, both fixed: a `RadioGroup` controlled/uncontrolled
+transition that silently stopped recording domain scores past the first
+domain, and a same-tree-position button-type mutation that made the last
+domain's "Next" click silently auto-submit the rating with an unreviewed
+default accept-axis value. See `DEVIATIONS.md` #133 (the audit) and #134
+(the implementation + both bugs, full root-cause detail). `npx tsc -b`,
+`npx eslint src --max-warnings 0`, and `npm run build` all clean.
+
+**Live-verified against the real backend (2026-09-18).** `make up` (dev
+profile) against real Postgres/Qdrant and the operator's real self-hosted
+gateway (`EMBEDDING_BACKEND=local`, real `LLM_GATEWAY_URL` — not the
+offline stub), rebuilt the `frontend` image to pick up the Tailwind/Radix
+changes, and drove the real app through the real `proxy` container: login,
+a real `/query` (one call correctly `escalated` on a real gateway JSON
+truncation, one correctly `no_guideline` — both the grounding safety net
+working as intended, not frontend bugs), and a full rank-mode rating of a
+real review-queue item through the rebuilt wizard, submitted for real. One
+pre-existing, unrelated gap surfaced and **fixed the same day**:
+`ReviewQueue.tsx`/`EscalationQueue.tsx`'s queue-list table overflowed at
+mobile widths with no scroll affordance — both now render a stacked card
+list below the `sm` breakpoint (full-width action button, same data/
+handlers) and the original table at `sm` and up; re-verified live against
+the same running stack (no horizontal overflow at 390px, table still
+renders at 1024px, rating still opens correctly from a card). See
+`DEVIATIONS.md` #135–#136. Status remains **reopened**, pending operator
+review and a new Checkpoint 5 approval.
 
 **Phase 6 — hybrid retrieval weight & depth calibration (Checkpoint 6
 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)).** New

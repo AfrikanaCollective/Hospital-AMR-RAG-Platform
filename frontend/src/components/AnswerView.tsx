@@ -6,10 +6,10 @@ import AnswerSegments from "./AnswerSegments";
 export default function AnswerView({ resp }: { resp: QueryResponse }) {
   if (resp.escalation) {
     return (
-      <div style={{ border: "1px solid #c0392b", borderRadius: 6, padding: 12 }}>
-        <strong>Sent for clinician review</strong>
-        <p style={{ margin: "6px 0" }}>{resp.escalation.message}</p>
-        <small style={{ color: "#888" }}>
+      <div className="rounded-md border border-danger p-3">
+        <strong className="text-ink">Sent for clinician review</strong>
+        <p className="my-1.5 text-ink">{resp.escalation.message}</p>
+        <small className="text-ink-muted">
           trigger: {resp.escalation.trigger_code} · outcome: {resp.observed_outcome}
         </small>
       </div>
@@ -18,7 +18,7 @@ export default function AnswerView({ resp }: { resp: QueryResponse }) {
 
   if (resp.observed_outcome === "no_guideline") {
     return (
-      <div style={{ border: "1px solid #999", borderRadius: 6, padding: 12 }}>
+      <div className="rounded-md border border-border p-3 text-ink">
         No matching guideline was retrieved for this question. The system does not
         answer from general knowledge.
       </div>

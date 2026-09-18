@@ -5,17 +5,17 @@ import type { Citation } from "../types";
 export default function CitationList({ citations }: { citations: Citation[] }) {
   if (!citations.length) return null;
   return (
-    <ol style={{ fontSize: 13 }}>
+    <ol className="grid gap-2 text-[13px] text-ink">
       {citations.map((c) => (
-        <li key={c.citation_id} id={`cite-${c.citation_id}`} style={{ marginBottom: 8 }}>
+        <li key={c.citation_id} id={`cite-${c.citation_id}`}>
           <strong>{c.document_title}</strong> (v{c.version_label}
           {c.version_status !== "active" ? `, ${c.version_status}` : ""})
           {c.section_number ? `, §${c.section_number}` : ""}, p.{c.page_start}
           {c.page_end !== c.page_start ? `–${c.page_end}` : ""}
-          <blockquote style={{ margin: "4px 0 0", color: "#333", borderLeft: "3px solid #ccc", paddingLeft: 8 }}>
+          <blockquote className="mt-1 border-l-[3px] border-border pl-2 text-ink">
             {c.quote}
           </blockquote>
-          <small style={{ color: "#888" }}>
+          <small className="text-ink-muted">
             chunk {c.chunk_id} · chars {c.char_start}–{c.char_end}
           </small>
         </li>

@@ -3,6 +3,7 @@ import QueryPanel from "../components/QueryPanel";
 import AnswerView from "../components/AnswerView";
 import type { QueryResponse } from "../types";
 import { api, ApiError } from "../api/client";
+import Button from "../components/ui/Button";
 
 // Query interface (PRD-107, SCOPE-1.1/2.1/2.2). Turns within one conversation
 // share a conversation_id (PRD-NG-011: at most one patient per conversation)
@@ -17,7 +18,7 @@ export default function QueryPage() {
 
   return (
     <section>
-      <h2 style={{ fontSize: 16 }}>Ask a guideline question</h2>
+      <h2 className="text-base font-semibold text-ink">Ask a guideline question</h2>
       <QueryPanel
         busy={busy}
         onSubmit={async (q) => {
@@ -34,16 +35,16 @@ export default function QueryPage() {
           }
         }}
       />
-      {error && <p style={{ color: "#c0392b" }}>{error}</p>}
+      {error && <p className="text-danger">{error}</p>}
       {resp && (
-        <div style={{ marginTop: 16 }}>
+        <div className="mt-4">
           <AnswerView resp={resp} />
         </div>
       )}
       {conversationId && (
-        <p style={{ fontSize: 12, color: "#999", marginTop: 24 }}>
+        <p className="mt-6 text-xs text-ink-muted">
           Conversation {conversationId} — follow-up questions stay in this conversation.{" "}
-          <button
+          <Button
             type="button"
             onClick={() => {
               setConversationId(undefined);
@@ -51,7 +52,7 @@ export default function QueryPage() {
             }}
           >
             Start a new conversation
-          </button>
+          </Button>
         </p>
       )}
     </section>

@@ -18,7 +18,7 @@ import { api, ApiError } from "../api/client";
 export default function ReviewPage() {
   return (
     <section>
-      <h2 style={{ fontSize: 16 }}>Review queue</h2>
+      <h2 className="text-base font-semibold text-ink">Review queue</h2>
 
       <RankModeSection />
     </section>
@@ -60,38 +60,48 @@ function RankModeSection() {
 
   return (
     <div>
-      <h3 style={{ fontSize: 15 }}>Rank mode</h3>
-      <p style={{ fontSize: 13, color: "#666" }}>
+      <h3 className="text-[15px] font-semibold text-ink">Rank mode</h3>
+      <p className="text-[13px] text-ink-muted">
         For each case: the 11-domain rubric AND an accept-axis decision, submitted
         together. Results stay in this queue until 3 distinct reviewers have rated
         them, then are archived with a per-domain IRR score.
       </p>
       <ReviewQueue items={items} selectedId={selectedId} onSelect={select} />
 
-      {error && <p style={{ color: "#c0392b", fontSize: 13 }}>{error}</p>}
-      {notice && <p style={{ color: "#1a7a1a", fontSize: 13 }}>{notice}</p>}
+      {error && <p className="text-[13px] text-danger">{error}</p>}
+      {notice && <p className="text-[13px] text-accent-strong">{notice}</p>}
 
       {detail && (
-        <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 6, padding: 12 }}>
-          <h4 style={{ fontSize: 14, marginTop: 0 }}>Result {detail.result_id.slice(0, 8)}</h4>
+        <div className="mt-4 space-y-4 rounded-md border border-border p-3">
+          <h4 className="text-sm font-semibold text-ink">
+            Result {detail.result_id.slice(0, 8)}
+          </h4>
           {detail.question && (
-            <p style={{ fontStyle: "italic", color: "#444" }}>
-              <strong>Generated query:</strong> {detail.question}
+            <p className="italic text-ink-muted">
+              <strong className="not-italic text-ink">Generated query:</strong> {detail.question}
             </p>
           )}
-          {detail.segments ? (
-            <AnswerSegments segments={detail.segments} citations={detail.citations} />
-          ) : detail.answer ? (
-            // A result written before segments were persisted (DEVIATIONS.md
-            // #120) — no per-segment citation_ids to link inline, only the
-            // flat answer text plus the same citation list, unlinked.
-            <>
-              <p style={{ whiteSpace: "pre-wrap" }}>{detail.answer}</p>
-              <CitationList citations={detail.citations} />
-            </>
-          ) : (
-            <p style={{ color: "#999" }}>No answer text recorded for this result.</p>
-          )}
+          <div>
+            {/* Same tag shape/classes as "Generated query:" above (plain
+                <strong>, no size override) so the two labels render at
+                identical font size/face — operator request. */}
+            <p className="mb-2 text-ink">
+              <strong>Generated AI LLM response:</strong>
+            </p>
+            {detail.segments ? (
+              <AnswerSegments segments={detail.segments} citations={detail.citations} />
+            ) : detail.answer ? (
+              // A result written before segments were persisted (DEVIATIONS.md
+              // #120) — no per-segment citation_ids to link inline, only the
+              // flat answer text plus the same citation list, unlinked.
+              <>
+                <p className="whitespace-pre-wrap text-ink">{detail.answer}</p>
+                <CitationList citations={detail.citations} />
+              </>
+            ) : (
+              <p className="text-ink-muted">No answer text recorded for this result.</p>
+            )}
+          </div>
 
           <RubricForm
             key={detail.result_id}

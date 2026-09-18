@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../useAuth";
 import { ApiError } from "../api/client";
+import Button from "../components/ui/Button";
 
 // Dev-JWT login (ARCH-011): email only, no password — mints a token for a
 // seeded demo user (`make seed`). Unavailable (404) when AUTH_PROVIDER != devjwt,
@@ -14,9 +15,9 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   return (
-    <section style={{ maxWidth: 360, margin: "48px auto" }}>
-      <h2 style={{ fontSize: 16 }}>Sign in (dev)</h2>
-      <p style={{ fontSize: 13, color: "#666" }}>
+    <section className="mx-auto mt-12 max-w-[360px]">
+      <h2 className="text-base font-semibold text-ink">Sign in (dev)</h2>
+      <p className="text-[13px] text-ink-muted">
         Seeded demo users only — no password. Try{" "}
         <code>clinician@example.dev</code>, <code>reviewer1@example.dev</code>, or{" "}
         <code>admin@example.dev</code>.
@@ -35,22 +36,22 @@ export default function LoginPage() {
             setBusy(false);
           }
         }}
-        style={{ display: "grid", gap: 8 }}
+        className="grid gap-2"
       >
-        <label>
+        <label className="grid gap-1 text-[13px] text-ink-muted">
           Email
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            style={{ width: "100%" }}
+            className="w-full rounded-lg border border-border bg-surface p-2 text-[15px] text-ink"
             required
           />
         </label>
-        <button type="submit" disabled={busy || !email.trim()}>
+        <Button type="submit" variant="primary" disabled={busy || !email.trim()}>
           {busy ? "Signing in…" : "Sign in"}
-        </button>
-        {error && <p style={{ color: "#c0392b", fontSize: 13 }}>{error}</p>}
+        </Button>
+        {error && <p className="text-[13px] text-danger">{error}</p>}
       </form>
     </section>
   );

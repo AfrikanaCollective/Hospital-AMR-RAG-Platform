@@ -5,6 +5,7 @@ import ReviewPage from "./pages/ReviewPage";
 import EscalationsPage from "./pages/EscalationsPage";
 import LoginPage from "./pages/LoginPage";
 import DisclaimerBanner from "./components/DisclaimerBanner";
+import Button from "./components/ui/Button";
 import { AuthProvider } from "./AuthContext";
 import { useAuth } from "./useAuth";
 import { hasRole } from "./auth";
@@ -20,28 +21,41 @@ function Shell() {
   const canReview = hasRole(auth, "reviewer") || hasRole(auth, "admin");
 
   return (
-    <div
-      style={{ fontFamily: "system-ui, sans-serif", maxWidth: 960, margin: "0 auto", padding: 16 }}
-    >
-      <header style={{ display: "flex", gap: 16, alignItems: "baseline" }}>
-        <h1 style={{ fontSize: 20 }}>Hospital RAG Platform</h1>
+    <div className="mx-auto max-w-[960px] p-4 font-sans text-ink">
+      <header className="flex items-baseline gap-4">
+        <h1 className="text-xl font-semibold">Hospital RAG Platform</h1>
         {auth && (
-          <nav style={{ display: "flex", gap: 12 }}>
-            <Link to="/">Query</Link>
-            {canReview && <Link to="/review">Review queue</Link>}
-            {canReview && <Link to="/escalations">Escalations</Link>}
+          <nav className="flex gap-3">
+            <Link className="text-accent-strong underline-offset-2 hover:underline" to="/">
+              Query
+            </Link>
+            {canReview && (
+              <Link className="text-accent-strong underline-offset-2 hover:underline" to="/review">
+                Review queue
+              </Link>
+            )}
+            {canReview && (
+              <Link
+                className="text-accent-strong underline-offset-2 hover:underline"
+                to="/escalations"
+              >
+                Escalations
+              </Link>
+            )}
           </nav>
         )}
-        <span style={{ marginLeft: "auto", fontSize: 13, color: "#666" }}>
+        <span className="ml-auto text-[13px] text-ink-muted">
           {auth ? (
             <>
               {auth.roles.join(", ")}{" "}
-              <button type="button" onClick={logout} style={{ marginLeft: 8 }}>
+              <Button type="button" onClick={logout} className="ml-2">
                 Sign out
-              </button>
+              </Button>
             </>
           ) : (
-            <Link to="/login">Sign in</Link>
+            <Link className="text-accent-strong underline-offset-2 hover:underline" to="/login">
+              Sign in
+            </Link>
           )}
         </span>
       </header>
@@ -77,7 +91,7 @@ function Shell() {
         />
       </Routes>
 
-      <footer style={{ marginTop: 32, fontSize: 12, color: "#666" }}>
+      <footer className="mt-8 text-xs text-ink-muted">
         This system reports and cites guideline content; it does not generate
         independent clinical recommendations.
       </footer>

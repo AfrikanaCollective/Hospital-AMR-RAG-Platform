@@ -21,20 +21,24 @@ export default function AnswerSegments({
 
   return (
     <div>
-      <div style={{ lineHeight: 1.5 }}>
+      <div className="text-[16px] leading-relaxed text-ink">
         {renumbered.segments.map((seg, i) => (
-          <span key={i} style={{ background: seg.type === "framing" ? "transparent" : "#eef6ff" }}>
+          <span key={i} className={seg.type === "framing" ? "" : "bg-accent/10"}>
             {seg.text}
             {seg.citation_ids.map((cid) => (
               <sup key={cid}>
-                <a href={`#cite-${cid}`}>[{cid}]</a>
+                <a className="text-accent-strong hover:underline" href={`#cite-${cid}`}>
+                  [{cid}]
+                </a>
               </sup>
             ))}
-            {seg.grounding_note ? <em style={{ color: "#a15c00" }}> ({seg.grounding_note})</em> : null}{" "}
+            {seg.grounding_note ? (
+              <em className="text-[#8a5000]"> ({seg.grounding_note})</em>
+            ) : null}{" "}
           </span>
         ))}
       </div>
-      <h4>Citations</h4>
+      <h4 className="mt-3 mb-1 text-[14px] font-semibold text-ink">Citations</h4>
       <CitationList citations={renumbered.citations} />
     </div>
   );

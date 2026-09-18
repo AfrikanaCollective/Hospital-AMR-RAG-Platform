@@ -4,6 +4,7 @@ import AcceptAxisControls from "../components/AcceptAxisControls";
 import { defaultAcceptAxisValue, isAcceptAxisValueValid } from "../acceptAxis";
 import type { AcceptAxisValue, EscalationDetail, EscalationSummary } from "../types";
 import { api, ApiError } from "../api/client";
+import Button from "../components/ui/Button";
 
 // Standalone accept-axis workflow (ARCH §13.2, DEVIATIONS.md #97): resolving
 // a `hitl.escalation` directly — a single urgent, held-answer resolution,
@@ -50,31 +51,31 @@ export default function EscalationsPage() {
 
   return (
     <section>
-      <h2 style={{ fontSize: 16 }}>Escalations</h2>
-      <p style={{ fontSize: 13, color: "#666" }}>
+      <h2 className="text-base font-semibold text-ink">Escalations</h2>
+      <p className="text-[13px] text-ink-muted">
         Open escalations awaiting a full accept / partial accept / reject / out-of-scope
         decision (a single held-answer resolution — not a multi-rater rank-mode
         pass). Opening one marks it in review.
       </p>
       <EscalationQueue items={items} selectedId={selectedId} onSelect={select} />
 
-      {error && <p style={{ color: "#c0392b", fontSize: 13 }}>{error}</p>}
-      {notice && <p style={{ color: "#1a7a1a", fontSize: 13 }}>{notice}</p>}
+      {error && <p className="text-[13px] text-danger">{error}</p>}
+      {notice && <p className="text-[13px] text-accent-strong">{notice}</p>}
 
       {detail && (
-        <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 6, padding: 12 }}>
-          <h4 style={{ fontSize: 14, marginTop: 0 }}>
+        <div className="mt-4 rounded-md border border-border p-3">
+          <h4 className="mt-0 text-sm font-semibold text-ink">
             Escalation {detail.id.slice(0, 8)} — {detail.trigger_code}
           </h4>
           {detail.candidate_answer ? (
-            <p style={{ whiteSpace: "pre-wrap" }}>{detail.candidate_answer}</p>
+            <p className="whitespace-pre-wrap text-ink">{detail.candidate_answer}</p>
           ) : (
-            <p style={{ color: "#999" }}>No candidate answer was held for this escalation.</p>
+            <p className="text-ink-muted">No candidate answer was held for this escalation.</p>
           )}
           {Object.keys(detail.trigger_detail).length > 0 && (
-            <details style={{ fontSize: 12, color: "#666" }}>
+            <details className="text-xs text-ink-muted">
               <summary>Trigger detail</summary>
-              <pre style={{ whiteSpace: "pre-wrap" }}>
+              <pre className="whitespace-pre-wrap">
                 {JSON.stringify(detail.trigger_detail, null, 2)}
               </pre>
             </details>
@@ -133,12 +134,17 @@ function EscalationDecisionForm({
         e.preventDefault();
         onSubmit(accept);
       }}
-      style={{ display: "grid", gap: 6 }}
+      className="mt-3 grid gap-3"
     >
       <AcceptAxisControls value={accept} onChange={setAccept} />
-      <button type="submit" disabled={!isAcceptAxisValueValid(accept) || busy}>
+      <Button
+        type="submit"
+        variant="primary"
+        disabled={!isAcceptAxisValueValid(accept) || busy}
+        className="justify-self-start"
+      >
         {busy ? "Submitting…" : "Submit decision"}
-      </button>
+      </Button>
     </form>
   );
 }
