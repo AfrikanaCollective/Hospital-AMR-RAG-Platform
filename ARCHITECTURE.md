@@ -789,6 +789,7 @@ different audit `outcome` values, and different eval expectations.
 |---|---|---|
 | **SCOPE-2.1** | **Stage-of-care classification.** Given a patient record, infer the current stage of in-hospital care **where guidelines define clear, extractable stage criteria**. Modeled as classification grounded in retrieved criteria, with citations to the criteria used and to which patient features matched. Emits a stage label + confidence + citations; **no** "what to do next". Low confidence or multiple plausible stages ⇒ escalation. | `stage-classifier agent`, §10. Uses `chunk_type = criteria` + `meta.criteria[]`. |
 | **SCOPE-2.2** | **Missing-information identification.** Compare patient features against the fields the matched guideline(s) require; produce a specific list of missing pertinent items, each with a citation to the guideline text that requires it. Clarification-seeking only — low risk, kept in scope. | `missing-info agent`, §10. Reads `records.field_index` (names only) + decrypted values only for fields it is authorized to see. |
+| **SCOPE-2.6** | *(Checkpoint 7 approved 2026-09-19, bounded to eval-only use — DEVIATIONS.md #143/#144/#146/#148/#149; `PHASE7-PROPOSAL.md`)* **Deterministic clinical-concept labeling.** Label a recorded, documented field value against an **operator-authored, attestation-gated** threshold/rule with a named clinical concept (e.g. `vitals.resp_rate_bpm` above an operator-defined threshold → "tachypnoea") — used as an **internal retrieval-signal only**, never quoted or framed as reported guideline content (only a retrieved chunk's own quote can support an answer segment, CLAUDE.md §3 rule 3), and **never** a suggested next step (that would cross into SCOPE-2.3). Must not fire on a field that was never assessed/documented — depends on the assessed/not-given/never-documented distinction `field_index`/`extract_features` already preserve (ARCH-039, DEVIATIONS #138/#141). A pure labeling/reporting extension of the existing structured-inference pattern (SCOPE-2.1/2.2), not a new category of capability. **Bounded to eval-only use**: its only caller is `app.eval.orchestration_ablation` (Phase 7's Arm C) — not wired into any agent, route, or the live orchestrator graph; production use remains a separate, unapproved, later decision. See ARCH-042 (§9.4). |
 
 ### 9.3 Out of scope — Scope 2 (out-of-scope half): walled off, not deleted
 
@@ -835,6 +836,75 @@ does nothing without implementing the body, and the code comment points to
 `next-step-recommender agent` role name is reserved (interface stub only) so
 SCOPE-2.3 could be added later without a graph redesign. Neither stub contains
 any recommendation logic.
+
+### 9.4 Mechanism for SCOPE-2.6 (ARCH-042) — implemented, bounded to eval-only use
+
+**ARCH-042** *(Checkpoint 7 approved 2026-09-19 — DEVIATIONS.md
+#143/#144/#146/#148/#149)*: its labeling logic follows `app.records.criteria`'s
+curated, never-inferred, plain-code pattern — but unlike `criteria.py` (whose
+rules are extracted from *retrieved* guideline text), a concept's threshold
+isn't tied to any specific chunk, so it cannot carry an automatic citation.
+That makes **who supplies the threshold** the load-bearing safety question,
+not the mechanism itself:
+
+- **Operator-authored, attestation-gated vocabulary file** —
+  `data/clinical_concepts.yaml` (alongside `data/record_schema.json`; a
+  schema-level artifact, not per-dataset, unlike `field_mapping.yaml`).
+  Ships as a template with `TODO_CONFIRM` placeholders; not yet attested by
+  the operator. Same governance pattern as `DATASET.md`: a required header
+  (`authored_by`, `authored_date`) and, **per concept, a required non-empty
+  `source`** field (free text — the guideline/reference/institutional
+  protocol the threshold comes from). A loader modeled on
+  `app.ingestion.records.guard_batch`'s attestation gate rejects (fails
+  closed, does not silently use) any entry whose `value`/`source` is still a
+  placeholder — a coding session must never be the one deciding a clinical
+  threshold, so an unattested entry is treated as absent, not as a guess.
+- **Internal-signal-only, never citation-bearing.** A concept label from
+  this vocabulary may only ever perturb *retrieval ranking* (e.g. query
+  augmentation, `PHASE7-PROPOSAL.md` §2 Arm C) or an internal
+  missing-info/triage signal. It must never appear as, or feed, answer text
+  framed as reported guideline content — the §8.3 wording/citation check
+  still gates every answer segment exactly as today; augmenting a query
+  cannot bypass it, since whatever chunk ends up cited still has to
+  independently pass grounding/quote verification. This is why the
+  mechanism cannot weaken the grounding guarantee even though its own
+  thresholds aren't retrieval-grounded.
+- **Optional per-concept `synonyms`** (spelling variants and phrase-level
+  equivalents alike, e.g. `tachypnoea` / `tachypnea` / `"fast breathing"`) —
+  operator-curated in the same attested file and gate as the threshold
+  itself, never auto-generated or inferred. Used only to build a query's
+  expansion clause (the primary term preserved, synonyms appended
+  parenthetically), the same technique `app.retrieval.hybrid._expand_
+  abbreviations` already uses for abbreviation expansion — a third instance
+  of the same curated-vocabulary pattern, not a new mechanism.
+- A rule only evaluates an `extract_features` path that is actually present
+  (never a `None`/absent value, per the ARCH-039 tri-state), and only ever
+  adds a label — no rule may be phrased as, or feed, a suggested action.
+- **Three operator shapes** (DEVIATIONS.md #153): a single threshold (`>`,
+  `<`, `>=`, `<=`, `=`, against `value`); a range (`between`, inclusive
+  `low`/`high` — e.g. an age band like "7 to 59 days"); and a boolean
+  presence check (`present`, no threshold at all — fires only when an
+  `examination_findings`/`maternal_risk_factors` field is exactly `True`, for
+  signs like apnoea/grunting that are already booleans in the record, not
+  numeric thresholds). Which of `value`/`low`+`high`/nothing is required is
+  gated by `operator` in the same attestation pass — `present` with a `value`
+  set, or `between` with `low > high`, both fail closed.
+- `field` must resolve to a real `app.records.access.extract_features` path
+  (the fixed schema's field names — `vitals.heart_rate_bpm`,
+  `encounter.gestational_age_weeks`, etc. — not free-form names like
+  "demographics.age_days"). The evaluator only ever compares `int`/`float`
+  values (`present` aside), so a concept referencing a non-numeric field
+  (`sex`, `care_setting`) loads without error but never fires — a real,
+  found-live gap (DEVIATIONS.md #153), not yet addressed (categorical/string
+  equality is a separate, not-yet-requested extension).
+- Code home: `app/records/concepts.py` (loader + evaluator), consuming
+  `data/clinical_concepts.yaml`.
+
+Implemented per this design (`tests/test_concepts.py`); its only caller is
+`app.eval.orchestration_ablation` (`PHASE7-PROPOSAL.md` Arm C), bounded to
+internal query augmentation with no production wiring. `data/clinical_concepts.yaml`
+itself is still a `TODO_CONFIRM` template — Arm C's real-data report cannot
+be produced until the operator attests it.
 
 ---
 

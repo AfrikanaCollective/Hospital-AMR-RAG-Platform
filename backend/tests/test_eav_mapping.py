@@ -29,6 +29,8 @@ TINY_CSV = """"key","field_name","field_value","context"
 7,"oxygen","TRUE","interventions"
 7,"gentamicin","TRUE","medication"
 7,"penicillin","FALSE","medication"
+7,"maternal_infection","TRUE","maternal_risk_factors"
+7,"prom","NA","maternal_risk_factors"
 8,"age_days","0","demographics"
 8,"sex","Female","demographics"
 """
@@ -70,6 +72,12 @@ list_targets:
     started_at_from: admission_date_time
     ts_key: started_at
     members: [gentamicin, penicillin]
+  maternal_risk_factors:
+    target: maternal_risk_factors
+    present_key: present
+    recorded_at_from: admission_date_time
+    ts_key: recorded_at
+    members: [maternal_infection, prom]
 derived:
   date_of_birth: { rule: admitted_minus_days }
 defaults:
@@ -125,6 +133,19 @@ def test_list_families_preserve_present_absent(tiny: tuple[Path, MappingSpec]) -
     assert d["interventions"] == [
         {"name": "oxygen", "active": True, "started_at": d["interventions"][0]["started_at"]}
     ]
+
+
+def test_na_sentinel_means_not_assessed_distinct_from_false(tiny: tuple[Path, MappingSpec]) -> None:
+    """DEVIATIONS #138/#139: FALSE = assessed and absent (a real list item);
+    NA (or a fully missing row) = never assessed (no list item at all)."""
+    csv_p, spec = tiny
+    wide = dict(load_wide(csv_p))
+    d = apply_mapping("7", wide["7"], spec)
+    names = {f["name"] for f in d["maternal_risk_factors"]}
+    assert names == {"maternal_infection"}  # "prom" was "NA" -> not assessed, no item
+    assert {f["name"]: f["present"] for f in d["maternal_risk_factors"]} == {
+        "maternal_infection": True
+    }
 
 
 def test_build_records_validates_against_schema(tiny: tuple[Path, MappingSpec]) -> None:

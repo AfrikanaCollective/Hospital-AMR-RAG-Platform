@@ -57,7 +57,7 @@ Placeholder model ids (UNVERIFIED, operator must confirm): embeddings
 
 ---
 
-## 1a. Patient record schema (`app/schemas/record.py`) — currently v1.3.0
+## 1a. Patient record schema (`app/schemas/record.py`) — currently v1.4.0
 
 One canonical Pydantic model, `PatientRecord` — a flat, **source-agnostic**
 clinical snapshot (not an EHR). Every source maps *onto* it via its own
@@ -71,9 +71,21 @@ adapter / `field_mapping.yaml`; no source-specific field enters the schema.
   still validate. `given_name`/`family_name` optional (de-identified data has
   no names).
 - Version history (module docstring): 1.0 adult · 1.1 neonatal fields · 1.2
-  exam findings / interventions / capillary refill / names optional · **1.3
-  `Medication.stopped_at` + `Intervention.stopped_at`** (DEVIATIONS #23, #32,
-  #35, #38, #39).
+  exam findings / interventions / capillary refill / names optional · 1.3
+  `Medication.stopped_at` + `Intervention.stopped_at` · **1.4
+  `maternal_risk_factors[]`** (reuses `ExamFinding`'s shape, kept distinct from
+  the newborn's own `examination_findings[]`) (DEVIATIONS #23, #32, #35, #38,
+  #39, #139).
+- **Repeating-group presence in `field_index`** (`compute_field_index`,
+  `app/ingestion/records.py`): a "wide" group (`Vitals`, one field per concept)
+  indexes as `{field}.{idx}.{concept}` by recursing its dict directly. A
+  "name+value" group (`ExamFinding`/`Intervention`/`Medication`/`LabResult` —
+  concept identity lives in a `name`/`analyte` *value*, not a key) is
+  special-cased so the concept name becomes part of the index *key*
+  (`examination_findings.0.apnoea`), never its value — an item existing at all
+  means *assessed* (its bool field is non-nullable), regardless of
+  True/False/present-or-not, distinct from no entry at all (never assessed)
+  (DEVIATIONS #138).
 - For `newborn_nbu_2021`: every med/intervention `started_at` == the record's
   `encounter.admitted_at`; `stopped_at` null (no source data).
 

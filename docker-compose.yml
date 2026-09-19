@@ -78,6 +78,12 @@ services:
       # into") and makes uploads survive a container recreate.
       - ./data/sample_guidelines:/app/data/sample_guidelines
       - ./data/patient_records:/app/data/patient_records
+      # Operator-editable clinical-concept vocabulary (SCOPE-2.6/ARCH-042,
+      # PRD-057) -- same rationale as the two mounts above: this is an
+      # operator-attested artifact (DEVIATIONS.md #143/#146/#149) that must
+      # be editable on the host without a rebuild, read by
+      # `scripts/run_orchestration_ablation.py` inside this container.
+      - ./data/clinical_concepts.yaml:/app/data/clinical_concepts.yaml:ro
       # Read-only: an optional extra CA cert for LLM_GATEWAY_CA_BUNDLE /
       # EMBEDDING_GATEWAY_CA_BUNDLE, e.g. a self-signed cert on an operator's
       # own gateway (DEVIATIONS.md #103). Gitignored (deploy/tls/*.pem); the

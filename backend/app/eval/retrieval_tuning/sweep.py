@@ -35,14 +35,14 @@ from app.schemas.enums import ExpectedOutcome, Provenance
 K_VALUES: tuple[int, ...] = tuple(range(2, 61, 2))  # 2..60 step 2 (30 values); chart 1 x-axis
 ALPHA_VALUES: tuple[float, ...] = tuple(round(i / 10, 1) for i in range(11))  # 0.0..1.0 step 0.1
 # Chart 2's own focus-depth grid, independent of K_VALUES — changed per follow-up request to
-# 4..36 step 4 (9 values, DEVIATIONS.md #126; previously 3..36 step 3, #125; previously
-# {20,22,...,40}, #124). Kept as a permanently separate constant rather than folded into
-# K_VALUES even now that this particular set is a subset of it again: chart 1 plots every
-# K_VALUES point on one x-axis line per alpha, and this value has already changed three times
-# on follow-up request — coupling it to K_VALUES would mean each change either has to check
-# subset membership or risks silently densifying chart 1's curves with points nobody asked to
-# add there.
-CHART2_K_VALUES: tuple[int, ...] = tuple(range(4, 37, 4))
+# 24..48 step 4 (7 values, DEVIATIONS.md #163; previously 4..36 step 4, #126; previously 3..36
+# step 3, #125; previously {20,22,...,40}, #124). Kept as a permanently separate constant rather
+# than folded into K_VALUES even now that this particular set is a subset of it again: chart 1
+# plots every K_VALUES point on one x-axis line per alpha, and this value has already changed
+# four times on follow-up request — coupling it to K_VALUES would mean each change either has to
+# check subset membership or risks silently densifying chart 1's curves with points nobody asked
+# to add there.
+CHART2_K_VALUES: tuple[int, ...] = tuple(range(24, 49, 4))
 # Independent of settings.candidate_k (ARCH-040) — see offline_fusion.py. Must stay comfortably
 # above max(K_VALUES, CHART2_K_VALUES): a candidate pool exactly equal to the deepest k would
 # silently cap recall@k at whatever recall@candidate_depth already was, rather than reflecting a

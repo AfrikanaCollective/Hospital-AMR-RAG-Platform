@@ -217,11 +217,11 @@ def chart_k_vs_recall_by_alpha(result: SweepResult, ax: plt.Axes) -> None:
 def chart_alpha_vs_recall_by_k(result: SweepResult, ax: plt.Axes) -> None:
     """Chart 2 (panel B): alpha (x, 0-1 step 0.1) vs recall@k (y, floor 0.3
     by default, extended down if real data is lower), one line per k in
-    CHART2_K_VALUES (4, 8, ..., 36 — changed per follow-up request,
-    DEVIATIONS.md #126), plus each k's RRF baseline as a matching dotted
-    horizontal reference. 9 series -> colored with the same sequential blue
-    ramp as chart 1's alpha, not the categorical order (see module
-    docstring)."""
+    CHART2_K_VALUES (24, 28, ..., 48 — changed per follow-up request,
+    DEVIATIONS.md #163; previously 4, 8, ..., 36, #126), plus each k's RRF
+    baseline as a matching dotted horizontal reference. 7 series -> colored
+    with the same sequential blue ramp as chart 1's alpha, not the
+    categorical order (see module docstring)."""
     df = pd.DataFrame(result.chart2_recall_rows)
     focus_k = CHART2_K_VALUES
     _style_axes(ax)

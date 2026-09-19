@@ -67,6 +67,7 @@ _CSV_LIST_FIELD_PREFIXES = (
     "vitals",
     "examination_findings",
     "interventions",
+    "maternal_risk_factors",
     "problems",
     "allergies",
 )
@@ -165,19 +166,54 @@ def looks_like_real_data(
         raise
 
 
+# Repeating groups shaped {name_key: <concept>, value_key: <the actual clinical
+# value>} (ExamFinding.present, Intervention/Medication.active, LabResult.value)
+# rather than "wide" per-concept fields (Vitals). For these, `name_key`'s value
+# (e.g. "apnoea") is itself a field NAME for indexing purposes — like
+# `vitals.heart_rate_bpm`'s field name is a literal model attribute — never a
+# clinical value; only `value_key`'s null-ness is ever indexed, never its
+# content. Fixes a bug where `criteria.field_present_in_index`'s documented
+# indexed-key convention (`vitals.0.heart_rate_bpm`) was never actually
+# produced for repeating groups, so `missing_info_agent` (SCOPE-2.2) reported
+# every criterion field sourced from a list as missing even when recorded.
+_NAME_VALUE_LIST_FIELDS: dict[str, tuple[str, str]] = {
+    "examination_findings": ("name", "present"),
+    "maternal_risk_factors": ("name", "present"),
+    "interventions": ("name", "active"),
+    "medications": ("name", "active"),
+    "labs": ("analyte", "value"),
+}
+
+
 def _flatten_presence(value: Any, prefix: str, out: dict[str, bool]) -> None:
     if isinstance(value, dict):
         for k, v in value.items():
             _flatten_presence(v, f"{prefix}.{k}" if prefix else k, out)
     elif isinstance(value, list):
         out[prefix] = len(value) > 0
+        name_value_keys = _NAME_VALUE_LIST_FIELDS.get(prefix)
+        for idx, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue  # scalar-list field (problems, allergies) -> flat flag only
+            if name_value_keys is not None:
+                name_key, value_key = name_value_keys
+                name = item.get(name_key)
+                if name:
+                    out[f"{prefix}.{idx}.{name}"] = item.get(value_key) is not None
+            else:
+                _flatten_presence(item, f"{prefix}.{idx}", out)
     else:
         out[prefix] = value is not None
 
 
 def compute_field_index(record: PatientRecord) -> dict[str, bool]:
     """Field NAMES + null-ness ONLY (PRD-080/ARCH §4.2) — never a value, so the
-    missing-info agent (SCOPE-2.2) can work without decrypting `payload_enc`."""
+    missing-info agent (SCOPE-2.2) can work without decrypting `payload_enc`.
+    Repeating groups (`vitals`, `labs`, `examination_findings`, `interventions`,
+    `medications`) get both a flat `{field}` any-recorded flag and per-item
+    indexed keys (`vitals.0.heart_rate_bpm`, `examination_findings.0.apnoea`)
+    so `app.records.criteria.field_present_in_index` can resolve a specific
+    concept without decrypting."""
     out: dict[str, bool] = {}
     for k, v in record.model_dump(mode="json").items():
         if k in _FIELD_INDEX_EXCLUDED:

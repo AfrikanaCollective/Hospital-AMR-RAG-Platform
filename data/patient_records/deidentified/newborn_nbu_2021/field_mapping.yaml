@@ -1,10 +1,19 @@
 # Field mapping: newborn_nbu_2021 (EAV) -> app/schemas/record.py  (ARCH-039; DEVIATIONS #34)
 # Consumed by app/ingestion/eav.py. The same spec would drive a future pull-API
 # that returns the same variables.
+#
+# `field_value == "NA"` (added to the export 2026-09-18, DEVIATIONS #139) means
+# "not assessed" -- app/ingestion/eav.py's `_NULL_LITERALS` already treats it
+# (and "", "none", "null", "n/a", "nan") as null for every transform, so it
+# needs no entry here. This is distinct from an assessed-negative "FALSE"
+# value, which produces a real list-target item (present=False) -- "NA" or a
+# fully absent (key, field_name) row produce no item at all. See DEVIATIONS
+# #138/#139 for how this tri-state (assessed-positive / assessed-negative /
+# not-assessed) is preserved through compute_field_index.
 
 dataset_id: newborn_nbu_2021
 provenance: deidentified-anonymised
-schema_version: "1.3.0"
+schema_version: "1.4.0"
 
 identity:
   record_id: "{key}"
@@ -59,6 +68,15 @@ list_targets:
     started_at_from: admission_date_time   # == encounter.admitted_at
     ts_key: started_at
     members: [ampicillin, ceftazidime, ceftriaxone, gentamicin, penicillin]
+  # maternal history, not the newborn's own signs -- schema v1.4.0's
+  # maternal_risk_factors[] (DEVIATIONS #139). "prom" = premature/prolonged
+  # rupture of membranes (operator-confirmed, 2026-09-18).
+  maternal_risk_factors:
+    target: maternal_risk_factors
+    present_key: present
+    recorded_at_from: admission_date_time
+    ts_key: recorded_at
+    members: [maternal_infection, prom]
 
 # derived (approximate; nullable)
 derived:

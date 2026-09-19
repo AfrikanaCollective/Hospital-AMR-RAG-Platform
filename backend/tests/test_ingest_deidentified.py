@@ -118,4 +118,4 @@ def test_ingest_script_runs_with_complete_attestation(tmp_path: Path) -> None:
     payload = json.loads(out.read_text())
     assert payload["data_class"] == "deidentified"
     assert payload["count"] == 25
-    assert payload["schema_version"] == "1.3.0"
+    assert payload["schema_version"] == "1.4.0"

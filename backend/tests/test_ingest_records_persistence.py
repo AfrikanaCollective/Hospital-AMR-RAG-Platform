@@ -13,7 +13,15 @@ import app.ingestion.records as records_mod
 from app.config import get_settings
 from app.db.models.records import Patient
 from app.ingestion.records import RealDataSuspectedError, compute_field_index, ingest_records
-from app.schemas.record import SYNTHETIC_PROVENANCE, Encounter, Medication, PatientRecord
+from app.records.criteria import field_present_in_index
+from app.schemas.record import (
+    SYNTHETIC_PROVENANCE,
+    Encounter,
+    ExamFinding,
+    Medication,
+    PatientRecord,
+    Vitals,
+)
 
 
 class _FakeSession:
@@ -124,3 +132,54 @@ def test_field_index_reflects_empty_list_as_false() -> None:
     idx = compute_field_index(_rec("MRN-1"))
     assert idx["medications"] is False
     assert idx["problems"] is False
+
+
+def test_field_index_distinguishes_assessed_negative_from_not_assessed() -> None:
+    """A FALSE exam finding (assessed, sign absent) must be indexed as
+    *present in the record* (assessed), distinct from a sign never assessed
+    at all (no key), and must never leak the actual True/False clinical value
+    into the index (PRD-080: field_index is names + null-ness only)."""
+    rec = _rec(
+        "MRN-1",
+        examination_findings=[
+            ExamFinding(name="apnoea", present=False),
+            ExamFinding(name="grunting", present=True),
+        ],
+    )
+    idx = compute_field_index(rec)
+    assert idx["examination_findings.0.apnoea"] is True  # assessed (regardless of finding)
+    assert idx["examination_findings.1.grunting"] is True  # assessed
+    assert not any(k.endswith(".central_cyanosis") for k in idx)  # never assessed -> no key
+    # apnoea's actual present=False clinical value never leaks -- both findings
+    # index as True (assessed), regardless of the underlying True/False value.
+    assert all(v is True for k, v in idx.items() if k.startswith("examination_findings."))
+
+
+def test_field_index_indexes_maternal_risk_factors_separately_from_exam_findings() -> None:
+    """schema v1.4.0 (DEVIATIONS #139): maternal_risk_factors is a distinct
+    list from examination_findings even though it reuses ExamFinding's shape."""
+    rec = _rec("MRN-1", maternal_risk_factors=[ExamFinding(name="prom", present=True)])
+    idx = compute_field_index(rec)
+    assert idx["maternal_risk_factors.0.prom"] is True
+    assert "examination_findings.0.prom" not in idx
+    assert field_present_in_index(idx, "maternal_risk_factors.prom") is True
+    assert field_present_in_index(idx, "maternal_risk_factors.maternal_infection") is False
+
+
+def test_field_index_indexes_vitals_by_concept_name() -> None:
+    rec = _rec("MRN-1", vitals=[Vitals(heart_rate_bpm=150.0, resp_rate_bpm=None)])
+    idx = compute_field_index(rec)
+    assert idx["vitals.0.heart_rate_bpm"] is True
+    assert idx["vitals.0.resp_rate_bpm"] is False  # slot recorded, no value -> not present
+
+
+def test_field_present_in_index_resolves_real_vitals_field_index() -> None:
+    """Regression: `field_present_in_index`'s repeating-group fallback
+    documents indexed keys like `vitals.0.heart_rate_bpm`, but
+    `compute_field_index` never actually produced them -- so
+    `missing_info_agent` (SCOPE-2.2) reported every vitals-sourced criterion
+    as missing even when the vital was recorded."""
+    rec = _rec("MRN-1", vitals=[Vitals(heart_rate_bpm=150.0)])
+    idx = compute_field_index(rec)
+    assert field_present_in_index(idx, "vitals.heart_rate_bpm") is True
+    assert field_present_in_index(idx, "vitals.resp_rate_bpm") is False

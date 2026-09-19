@@ -1,6 +1,6 @@
 {
-  "$comment": "Fixed patient-record schema (PRD-002, PRD-003, PRD-A3). Kept in sync with backend/app/schemas/record.py (PatientRecord). Regenerate with: python -c \"import json,app.schemas.record as r; print(json.dumps(r.PatientRecord.model_json_schema(), indent=2))\". Every field is PHI by default (PRD-080). 1.1.0 neonatal fields (DEVIATIONS #32). 1.2.0 capillary_refill_seconds, examination_findings[], interventions[]; given_name/family_name no longer required (DEVIATIONS #35, #38). 1.3.0 Medication.stopped_at + Intervention.stopped_at — interval end (DEVIATIONS #39). Temporal entities carry started_at/stopped_at; point-in-time entities carry one *_at. All additions optional.",
-  "schema_version": "1.3.0",
+  "$comment": "Fixed patient-record schema (PRD-002, PRD-003, PRD-A3). Kept in sync with backend/app/schemas/record.py (PatientRecord). Regenerate with: python -c \"import json,app.schemas.record as r; print(json.dumps(r.PatientRecord.model_json_schema(), indent=2))\". Every field is PHI by default (PRD-080). 1.1.0 neonatal fields (DEVIATIONS #32). 1.2.0 capillary_refill_seconds, examination_findings[], interventions[]; given_name/family_name no longer required (DEVIATIONS #35, #38). 1.3.0 Medication.stopped_at + Intervention.stopped_at — interval end (DEVIATIONS #39). 1.4.0 maternal_risk_factors[] — maternal-history signs, same shape as examination_findings but distinct from the newborn's own signs (DEVIATIONS #139). Temporal entities carry started_at/stopped_at; point-in-time entities carry one *_at. All additions optional.",
+  "schema_version": "1.4.0",
   "type": "object",
   "required": ["record_id", "mrn"],
   "properties": {
@@ -100,6 +100,19 @@
           "collected_at": {"type": ["string", "null"], "format": "date-time"},
           "reference_low": {"type": ["number", "null"]},
           "reference_high": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "maternal_risk_factors": {
+      "type": "array",
+      "description": "maternal-history signs (e.g. maternal infection, PROM), same present/absent shape as examination_findings but distinct from the newborn's own signs (1.4.0)",
+      "items": {
+        "type": "object",
+        "required": ["name", "present"],
+        "properties": {
+          "name": {"type": "string"},
+          "present": {"type": "boolean"},
+          "recorded_at": {"type": ["string", "null"], "format": "date-time"}
         }
       }
     },

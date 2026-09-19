@@ -46,7 +46,14 @@ _SYNONYM_KEYS_BY_LENGTH = sorted(_CRITERIA_FIELD_SYNONYMS, key=len, reverse=True
 # (e.g. "vitals.0.heart_rate_bpm", "vitals.1.heart_rate_bpm", ...) — this is
 # the concept-level presence check missing_info_agent uses so it can work
 # from field_index alone, without decrypting (ARCH §4.2).
-_LIST_FIELD_PREFIXES = ("vitals", "labs", "medications", "examination_findings", "interventions")
+_LIST_FIELD_PREFIXES = (
+    "vitals",
+    "labs",
+    "medications",
+    "examination_findings",
+    "interventions",
+    "maternal_risk_factors",
+)
 
 _OPERATORS: dict[str, Any] = {
     ">=": operator.ge,

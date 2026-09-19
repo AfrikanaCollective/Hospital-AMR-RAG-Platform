@@ -80,13 +80,11 @@ _RETRY_SUFFIX_TEMPLATE = """
 
 STRICT: your previous question used word(s) not present in the patient
 presentation above, and not just a framing word: {unmapped}. You may not
-infer a diagnosis, condition, or clinical impression from what IS listed —
-for example, seeing an antibiotic does not mean you may name the infection
-it is typically used to treat. Rewrite the question using only the exact
-findings, medications, vitals, and demographics listed above, in
-approximately their own wording. It must still ask what the GUIDELINE
-recommends (the word "guideline" must appear) — do not drop that shape
-while fixing the wording above."""
+infer a diagnosis, condition, or clinical impression from what IS listed.
+Rewrite the question using only the exact findings, vitals, and
+demographics listed above, in approximately their own wording. It must
+still ask what the GUIDELINE recommends (the word "guideline" must appear)
+— do not drop that shape while fixing the wording above."""
 
 
 def _retry_suffix(unmapped: list[str]) -> str:
@@ -132,11 +130,34 @@ class QuestionGenerationFailed(RuntimeError):
     `QGEN_MAX_RETRIES` attempts."""
 
 
+def _humanize(name: str) -> str:
+    """`difficulty_feeding` -> `difficulty feeding`. A snake_case field/EAV
+    member name is an internal identifier, not prose (DEVIATIONS.md #155) —
+    without this, the model reproduces the underscore verbatim into the
+    generated question (the system prompt tells it to use the listed
+    findings "in approximately their own wording," and it does, literally).
+    Safe against the no-fabrication validator: `app.retrieval.sparse.analyze`
+    already tokenizes on non-alphanumeric boundaries, so "difficulty_feeding"
+    and "difficulty feeding" produce the same two tokens either way."""
+    return name.replace("_", " ")
+
+
 def _field_subset_lines(record: dict) -> str:
     """ARCH §15.1 step 3 — every structured field actually present in
     `record`, grouped for the prompt. Absent (`None`/empty) fields are
     omitted, never stated as negative (that would itself be a fabrication —
-    PRD-061)."""
+    PRD-061).
+
+    **Medications and interventions are never included** (DEVIATIONS.md
+    #155, operator instruction): seeing a specific drug/intervention name
+    let a real gateway model infer an unstated diagnosis almost every time
+    (DEVIATIONS.md #115's "gentamicin -> sepsis" finding) — excluding them
+    from the prompt entirely is a stronger fix than the reject-and-retry
+    mitigation already in place, which stays as a backstop.
+    `app.eval.question_gen.validate._EXCLUDED_VALUE_FIELDS` additionally
+    excludes both from the validator's allowed vocabulary, so even a model
+    that mentions one anyway (from its own general knowledge, not this
+    prompt) gets rejected and retried, not silently accepted."""
     lines: list[str] = []
     if record.get("sex"):
         lines.append(f"- sex: {record['sex']}")
@@ -152,19 +173,11 @@ def _field_subset_lines(record: dict) -> str:
         if values:
             lines.append(f"- {label}: {', '.join(str(v) for v in values)}")
 
-    findings = [f["name"] for f in (record.get("examination_findings") or []) if f.get("present")]
+    findings = [
+        _humanize(f["name"]) for f in (record.get("examination_findings") or []) if f.get("present")
+    ]
     if findings:
         lines.append(f"- examination findings present: {', '.join(findings)}")
-
-    interventions = [
-        i["name"] for i in (record.get("interventions") or []) if i.get("active", True)
-    ]
-    if interventions:
-        lines.append(f"- current interventions: {', '.join(interventions)}")
-
-    meds = [m["name"] for m in (record.get("medications") or []) if m.get("name")]
-    if meds:
-        lines.append(f"- current medications: {', '.join(meds)}")
 
     vitals_list = record.get("vitals") or []
     if vitals_list:

@@ -191,9 +191,24 @@ _UNIT_WORDS = frozenset(
 )
 
 # Identity/meta fields never contribute clinical vocabulary (and shouldn't be
-# mentioned in a narrative anyway).
+# mentioned in a narrative anyway). `medications`/`interventions` are
+# excluded per DEVIATIONS.md #155 (operator instruction: never in a
+# generated question) -- `app.eval.question_gen.generate._field_subset_lines`
+# already never shows them to the model; excluding them here too means a
+# medication/intervention name mentioned anyway (the model's own general
+# knowledge, not this prompt) is rejected as an unmapped entity, not
+# silently accepted because it happens to be a real record value.
 _EXCLUDED_VALUE_FIELDS = frozenset(
-    {"record_id", "mrn", "given_name", "family_name", "dataset_provenance", "schema_version"}
+    {
+        "record_id",
+        "mrn",
+        "given_name",
+        "family_name",
+        "dataset_provenance",
+        "schema_version",
+        "medications",
+        "interventions",
+    }
 )
 
 

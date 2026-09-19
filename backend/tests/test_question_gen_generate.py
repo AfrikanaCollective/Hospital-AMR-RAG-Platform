@@ -13,6 +13,7 @@ import pytest
 from app.eval.question_gen.generate import (
     QuestionGenerationFailed,
     _field_subset_lines,
+    _humanize,
     _is_scope1_framed,
     generate_question,
 )
@@ -145,6 +146,37 @@ def test_field_subset_lines_never_states_absent_fields() -> None:
 def test_field_subset_lines_handles_empty_record() -> None:
     lines = _field_subset_lines({"record_id": "r2", "mrn": "MRN-2"})
     assert "no structured clinical fields" in lines
+
+
+def test_field_subset_lines_never_includes_medications_or_interventions() -> None:
+    """DEVIATIONS.md #155 (operator instruction): a generated question must
+    never be able to mention a medication or intervention, since seeing one
+    let a real gateway model infer an unstated diagnosis (DEVIATIONS #115)."""
+    record = {
+        **RECORD,
+        "medications": [{"name": "gentamicin", "active": True}],
+        "interventions": [{"name": "cpap", "active": True}],
+    }
+    lines = _field_subset_lines(record)
+    assert "gentamicin" not in lines.lower()
+    assert "cpap" not in lines.lower()
+    assert "medication" not in lines.lower()
+    assert "intervention" not in lines.lower()
+
+
+def test_field_subset_lines_humanizes_underscored_finding_names() -> None:
+    """DEVIATIONS.md #155: an EAV-source member name like "difficulty_feeding"
+    is an internal identifier, not prose -- must read as "difficulty feeding"
+    in the prompt so the model doesn't reproduce the underscore verbatim."""
+    record = {**RECORD, "examination_findings": [{"name": "difficulty_feeding", "present": True}]}
+    lines = _field_subset_lines(record)
+    assert "difficulty feeding" in lines
+    assert "difficulty_feeding" not in lines
+
+
+def test_humanize_replaces_underscores_with_spaces() -> None:
+    assert _humanize("difficulty_feeding") == "difficulty feeding"
+    assert _humanize("grunting") == "grunting"
 
 
 # ── _is_scope1_framed ─────────────────────────────────────────────────────────

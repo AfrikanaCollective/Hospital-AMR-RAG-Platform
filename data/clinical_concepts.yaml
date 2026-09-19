@@ -1,0 +1,193 @@
+# Operator-authored clinical-concept vocabulary (SCOPE-2.6 / ARCH-042 §9.4;
+# PRD-057; DEVIATIONS.md #143/#144/#146/#147/#148/#153).
+#
+# TEMPLATE ONLY -- every "TODO_CONFIRM" below must be replaced by the
+# operator before this file can be used for real. app/records/concepts.py's
+# loader fails closed (raises ConceptVocabularyNotAttested) on any entry
+# still carrying a placeholder -- it does not silently fall back to a
+# guess. A coding session must never be the one deciding a clinical
+# threshold, a synonym, or a source citation; only the operator does.
+#
+# Every concept needs a non-empty `source` (a named guideline, clinical
+# reference, or institutional protocol the threshold comes from). Entries
+# here are internal retrieval-signal labels ONLY -- used by Phase 7's
+# orchestration ablation (PHASE7-PROPOSAL.md) to augment a search query
+# before/after retrieval. They are never quoted or referenced as guideline
+# content in any answer (CLAUDE.md §3 rule 3): only a retrieved chunk's own
+# verbatim quote can support an answer segment.
+#
+# `synonyms` (optional) covers spelling variants and phrase-level
+# equivalents alike, in one list -- e.g. "tachypnoea" / "tachypnea" / "fast
+# breathing" -- all operator-curated, never auto-generated (DEVIATIONS #147).
+#
+# `field` must be a real app.records.access.extract_features() path -- the
+# fixed schema fields are (not app-defined "demographics"/free-form names):
+#   vitals.{heart_rate_bpm, resp_rate_bpm, systolic_bp_mmhg, diastolic_bp_mmhg,
+#           mean_bp_mmhg, temperature_c, spo2_percent, weight_g,
+#           capillary_refill_seconds}
+#   encounter.{gestational_age_weeks, birth_weight_g, day_of_life, ward,
+#              care_setting, presenting_complaint, triage_category}
+#   sex, date_of_birth (present in the record, but NOT numeric -- the
+#     evaluator only compares int/float values; a concept referencing these
+#     loads fine but never fires today, see DEVIATIONS #153)
+#   examination_findings.<name>, maternal_risk_factors.<name> (boolean signs
+#     -- use operator "present", see below)
+#
+# `operator` is one of:
+#   ">" "<" ">=" "<=" "="   -- threshold: field compared against `value`
+#   "between"               -- range: `low <= field <= high` (inclusive both
+#                              ends; needs `low`+`high`, not `value`)
+#   "present"               -- boolean: fires only when field is exactly
+#                              `True` (an assessed, positive exam finding /
+#                              maternal risk factor); needs no
+#                              `value`/`low`/`high`. Use for signs like
+#                              apnoea/grunting that are already booleans in
+#                              the record, not numeric thresholds.
+
+authored_by: "Timothy Tuti"
+authored_date: "19 Sep 2026"
+
+concepts:
+  tachypnoea:
+    field: vitals.resp_rate_bpm
+    operator: ">="
+    value: 60
+    source: "operator-curated"
+    synonyms: ["fast breathing", "high respiratory rate", "tachypnea", "rapid breathing", "≥ 60 breaths per minute"]
+    notes: "neonatal, RR at rest"
+
+  fever:
+    field: vitals.temperature_c
+    operator: ">="
+    value: 38.0
+    source: "operator-curated"
+    synonyms: ["high body temperature", "≥ 38 °C"]
+    notes: "neonatal, A rectal temperature (gold). armpit or ear readings (unreliable)"
+
+  hypothermia:
+    field: vitals.temperature_c
+    operator: "<"
+    value: 35.5
+    source: "operator-curated"
+    synonyms: ["low body temperature", "< 35.5 °C"]
+    notes: "neonatal, rectal temperature (gold); armpit or ear readings (unreliable)"
+
+  slow capillary refill:
+    field: vitals.capillary_refill_seconds
+    operator: ">="
+    value: 3
+    source: "operator-curated"
+    synonyms: ["delayed capillary refill", "prolonged capillary refill" ]
+    notes: "neonatal, poor peripheral perfusion"
+
+  tachycardia:
+    field: vitals.heart_rate_bpm
+    operator: ">="
+    value: 180
+    source: "operator-curated"
+    synonyms: ["tachyarrhythmia"]
+    notes: "neonatal, abnormally fast heart rate that exceeds the normal physiological range for a newborn"
+
+  bradycardia:
+    field: vitals.heart_rate_bpm
+    operator: "<"
+    value: 110
+    source: "operator-curated"
+    synonyms: ["bradyarrhythmia", "brachycardia" ]
+    notes: "Heart rate is slower than normal for their age and developmental stage"
+
+  hypoxia:
+    field: vitals.spo2_percent
+    operator: "<"
+    value: 90
+    source: "operator-curated"
+    synonyms: ["hypoxemia"]
+    notes: "Pulse oximetry less than 90% in newborns"
+
+  # Based on baby's demographics
+  preterm:
+    field: encounter.gestational_age_weeks
+    operator: "<"
+    value: 37
+    source: "operator-curated"
+    synonyms: ["prematurity", "< 37 weeks"]
+    notes: "WHO: any baby born alive before 37 completed weeks of pregnancy are completed"
+
+  low birth weight:
+    field: encounter.birth_weight_g
+    operator: "<"
+    value: 2500
+    source: "operator-curated"
+    synonyms: ["lbw", "vlbw", "elbw"]
+    notes: "WHO: less than 2500 grams at birth, regardless of how long the pregnancy lasted"
+
+  early onset:
+    field: encounter.day_of_life
+    operator: "<"
+    value: 3
+    source: "operator-curated"
+    synonyms: ["< 3 days"]
+    notes: "WHO: Early onset"
+
+  late onset:
+    field: encounter.day_of_life
+    operator: "between"
+    low: 3
+    high: 6
+    source: "operator-curated"
+    synonyms: ["3 days to < 7 days"]
+    notes: "WHO: Range between 3 days <7 days"
+
+  0–6 days:
+    field: encounter.day_of_life
+    operator: "between"
+    low: 0
+    high: 6
+    source: "operator-curated"
+    synonyms: ["0–6"]
+    notes: "WHO: Range between 0 days <7 days"
+
+  7–59 days:
+    field: encounter.day_of_life
+    operator: "between"
+    low: 7
+    high: 59
+    source: "operator-curated"
+    synonyms: ["7–59"]
+    notes: "WHO: Range between 7 days <60 days"
+
+  maternal infection:
+    field: maternal_risk_factors.maternal_infection
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["maternal sepsis", "chorioamnionitis"]
+    notes: "maternal-history sign, not the newborn's own examination_findings"
+
+  prom:
+    field: maternal_risk_factors.prom
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["prolonged rupture of membranes", "premature rupture of membranes"]
+    notes: "maternal-history sign, not the newborn's own examination_findings"
+
+  apnoea:
+     field: examination_findings.apnoea
+     operator: "present"
+     source: "operator-curated"
+     synonyms: ["apnea"]
+     notes: "fires only when apnoea was assessed and present"
+
+  floppy:
+    field: examination_findings.floppy
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["floppy", "movement only when stimulated", "no movement at all", "lethargy"]
+    notes: "fires only when floppy was assessed and present"
+
+  difficulty feeding:
+    field: examination_findings.difficulty_feeding
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["difficulty feeding", "not feeding well", "not able to feed at all", "unable to feed at all"]
+    notes: "fires only when difficulty feeding was assessed and present"
+

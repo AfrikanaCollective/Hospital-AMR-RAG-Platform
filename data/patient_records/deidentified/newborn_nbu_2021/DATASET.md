@@ -29,6 +29,15 @@ version control (`.gitignore`).
 - Format: EAV / long — columns `key, field_name, field_value, context`.
 - ~40,871 patients, one assessment snapshot each; `(key, field_name)` is unique.
 - `key` is an integer surrogate id (no name / MRN in the source).
+- **2026-09-18 export update:** rows with `field_value == "NA"` are now
+  included explicitly for a field that was **not assessed** for a patient
+  (previously such fields were simply absent from that `key`'s rows — both
+  forms mean the same thing and are handled identically by
+  `app/ingestion/eav.py`'s existing null-literal handling; no mapping change
+  needed). This is distinct from `field_value == "FALSE"`, which means the
+  sign/intervention/medication **was assessed and found absent/not given**.
+  See DEVIATIONS #138/#139 for how this three-way distinction (assessed-
+  positive / assessed-negative / not-assessed) is preserved end to end.
 
 ## Known residual identifiers
 
@@ -39,7 +48,7 @@ version control (`.gitignore`).
   `generalise_month` transform for `admission_date_time` in `field_mapping.yaml`
   and re-ingest.
 
-## Source variables (32) by context
+## Source variables (34) by context
 
 | context | variables                                                                                                                                        |
 |---|--------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -49,6 +58,7 @@ version control (`.gitignore`).
 | history_examination | apnoea, bulging_fontanelle, central_cyanosis, convulsions, crackles, difficulty_feeding, floppy, grunting, indrawing, irritable (all TRUE/FALSE) |
 | interventions | antibiotics, cpap, feeds, fluids, kmc, oxygen, phenobarbital (all TRUE/FALSE)                                                                    |
 | medication | ampicillin, ceftazidime, ceftriaxone, gentamicin, penicillin (all TRUE/FALSE)                                                                    |
+| **maternal_risk_factors** *(added 2026-09-18)* | maternal_infection, prom (all TRUE/FALSE) — `prom` = premature/prolonged rupture of membranes (confirmed by operator, 2026-09-18) |
 
 ## Mapping
 
@@ -58,6 +68,9 @@ kg→g; `sex` normalised to `male`/`female`; `triage_category` literal `"None"`
 sign/intervention/medication variables expand into
 `examination_findings[]` / `interventions[]` / `medications[]`.
 `date_of_birth` is derived (`admitted_at − age_days`, approximate).
+`maternal_infection`/`prom` expand into `maternal_risk_factors[]` (schema
+v1.4.0) — a maternal-history sign list, kept separate from the newborn's own
+`examination_findings[]`.
 
 ## Limitations
 

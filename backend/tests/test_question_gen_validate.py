@@ -27,6 +27,28 @@ def test_record_value_vocabulary_excludes_identity_fields() -> None:
     assert "mrn-1" not in vocab and "mrn" not in vocab  # from the mrn VALUE, not the key
 
 
+def test_record_value_vocabulary_excludes_medications_and_interventions() -> None:
+    """DEVIATIONS.md #155: a medication/intervention name mentioned in a
+    generated question must be rejected, not silently accepted just because
+    it happens to be a real record value."""
+    record = {
+        **RECORD,
+        "medications": [{"name": "gentamicin", "active": True}],
+        "interventions": [{"name": "cpap", "active": True}],
+    }
+    vocab = record_value_vocabulary(record)
+    assert "gentamicin" not in vocab
+    assert "cpap" not in vocab
+
+
+def test_narrative_mentioning_a_medication_fails_even_though_it_is_a_real_value() -> None:
+    record = {**RECORD, "medications": [{"name": "gentamicin", "active": True}]}
+    q = "What does the guideline recommend for a newborn on gentamicin presenting with grunting?"
+    report = validate_narrative(q, record)
+    assert not report.ok
+    assert "gentamicin" in report.unmapped_entities
+
+
 def test_record_value_vocabulary_includes_clinical_values() -> None:
     vocab = record_value_vocabulary(RECORD)
     # "35.2" tokenizes to "35" + "2" (the analyzer splits on "." -- not a bug,

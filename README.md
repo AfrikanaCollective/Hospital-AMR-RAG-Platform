@@ -24,11 +24,12 @@ evaluation workflow.
 |---|---|---|
 | **0** | Product & architecture docs | ✅ complete (Checkpoint 0 approved) |
 | **1** | Agent instructions & scaffolding | ✅ complete (Checkpoint 1 approved 2026-09-12) |
-| **2** | Ingestion & hybrid retrieval core | ✅ complete (Checkpoint 2 approved 2026-09-14) |
+| **2** | Ingestion & hybrid retrieval core | ✅ reopen closed 2026-09-18 (`newborn_nbu_2021` EAV export update resolved — `NA` sentinel, new `maternal_risk_factors` context/schema v1.4.0, `field_index` tri-state fix; DEVIATIONS #138–#142; original Checkpoint 2 approved 2026-09-14) |
 | **3** | Multi-agent orchestration & HITL | ✅ complete (Checkpoint 3 approved 2026-09-14) |
 | **4** | API & backend hardening | ✅ complete (Checkpoint 4 approved 2026-09-14) |
 | **5** | React frontend | 🔄 reopened 2026-09-17 (accessibility/contrast pass, WCAG 2.2 AA; original Checkpoint 5 approved 2026-09-14) |
 | **6** | Hybrid retrieval weight & depth calibration | ✅ complete (Checkpoint 6 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)) |
+| **7** | Single-stage vs. multi-step orchestration ablation | ✅ implemented + run live (Checkpoint 7 approved 2026-09-19, see [PHASE7-PROPOSAL.md](PHASE7-PROPOSAL.md)); real result inconclusive on this deployment's data — see DEVIATIONS #150 |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
 data models, database schema (28 tables across 7 Postgres schemas, including
@@ -822,6 +823,93 @@ prose caution, that SapBERT's higher point estimate isn't statistically
 distinguishable from the RRF baseline at this sample size. See
 `DEVIATIONS.md` #132.
 
+**Phase 7 — single-stage vs. multi-step orchestration ablation (Checkpoint 7
+approved 2026-09-19, see [PHASE7-PROPOSAL.md](PHASE7-PROPOSAL.md)).** New
+offline-only tooling (`app/eval/orchestration_ablation/`) compares three
+retrieval-query arms over the same gold-chunk eval-question set: **single-stage**
+(the raw generated question, unchanged), **criteria-reuse** (a second retrieval
+pass augmented with matched, already-retrieved `criteria`-chunk facts — always
+citation-traceable, no new capability), and **operator-vocabulary** (a query
+augmented, before retrieval, from a new operator-authored concept vocabulary).
+The third arm implements a bounded slice of the previously-proposed `SCOPE-2.6`
+capability (`PRD-057`/`ARCH-042`, `DEVIATIONS.md` #143/#144/#146): a new
+`app/records/concepts.py` loads and attestation-gates
+`data/clinical_concepts.yaml` (a `DATASET.md`-style template — every
+`TODO_CONFIRM` must be replaced by the operator before it's usable), and its
+only caller is this eval harness — not wired into any agent, route, or the
+live orchestrator graph. Reuses `app.eval.metrics.precision_recall_at_k`/`mrr`
+and `app.retrieval.hybrid.retrieve` unchanged. `make orchestration-ablation-report`
+(`scripts/run_orchestration_ablation.py`) produces a 3-panel seaborn PNG report
+(recall@k, MRR@8, augmentation-fired rate — all per arm). **591 tests pass**
+(33 new, offline against `:memory:` Qdrant + stub backends). See
+`DEVIATIONS.md` #149.
+
+**Run for real (2026-09-19)** against the live `dev`-profile stack, operator
+attested (`data/clinical_concepts.yaml` — `tachypnoea`: `vitals.resp_rate_bpm
+> 59`, real synonyms), real 314-point 3-document corpus, 67 real
+`well_supported` + 2 `missing_info_expected` questions. Found and fixed a
+real bug first: the script's default `--concepts-path` computed
+`/data/clinical_concepts.yaml` instead of `/app/data/clinical_concepts.yaml`
+(`__file__`-relative math assumed the host's directory layout, not the
+container's) — switched both path defaults to cwd-relative, env-overridable
+(`CLINICAL_CONCEPTS_PATH`/`ORCHESTRATION_ABLATION_OUT_DIR`), matching
+`scripts/prepare_sample_guidelines.py`'s existing convention. **Real result:
+recall@8/@24 = 0.6866, recall@5 = 0.0149, MRR@8 = 0.1057 — identical across
+all three arms** (fired rate 0% for both multi-step arms, on every
+question). Root cause, confirmed directly: **0 of 101 real eval questions in
+this deployment resolve to a bundled synthetic record** — every real
+question here was generated via the de-identified-sourced `app.eval.auto_seed`,
+never the synthetic-sourced path this ablation's no-PHI design (§7) requires
+Arms B/C to key off. Not a bug in the ablation — a real limitation of this
+deployment's current question pool, so the comparison is currently
+inconclusive here rather than showing "no effect." Full account, including
+confirmation that the real LLM gateway is reachable (so a synthetic-sourced
+question set is feasible but needs a separate, pre-existing gap in
+`app.eval.tasks` fixed first — PRD-070), in `DEVIATIONS.md` #150.
+
+**Gap closed + re-run (2026-09-19).** `app.eval.tasks._run_generate_questions`
+now invokes the real pipeline once per generated question and takes its own
+grounding-verified citations as `gold_relevant_chunks` — same pattern
+`app.eval.auto_seed` already used, closing the gap PRD-070 had flagged since
+DEVIATIONS #122 (DEVIATIONS #151, 5 new tests, 596 passed). Generated 9 real
+synthetic-sourced questions live (18 attempted, 9 passed the existing
+narrative validator); all 9 correctly resolve to a bundled synthetic record,
+3 `well_supported` ones got real gold chunks. Re-ran the ablation against the
+larger pool (69 `well_supported` + 4 `missing_info_expected`) — **still 0%
+fired rate for both arms**, but now root-caused two levels deeper than "no
+resolvable record": (1) the real ingested corpus has **zero** `chunk_type=
+criteria` chunks (0 of 314, confirmed directly against Qdrant) — Arm B
+cannot fire against this corpus at all, structurally; (2) the two synthetic
+records with an assessed respiratory rate were 59.0 and 40.0 against the
+operator's attested `>59` threshold — 59.0 is exactly at the boundary, not
+above it. Both are real properties of this corpus/threshold, not bugs;
+flagged to the operator rather than adjusted unilaterally. Full account in
+`DEVIATIONS.md` #151/#152.
+
+**Schema extended, vocabulary corrected + expanded, re-run for real
+(2026-09-19).** `app.records.concepts` gained two new operator shapes
+(`between` for ranges, `present` for boolean `examination_findings`/
+`maternal_risk_factors` signs) alongside the original single-threshold
+comparison. The operator independently authored a much larger vocabulary
+(18 concepts); most of its field references (`demographics.age_days`,
+`vitals.heart_rate`, `vitals.temparature`, ...) didn't match
+`extract_features`'s real output and would have silently never fired —
+corrected to the real field names, and three range-typo'd entries
+(`operator: "<", value: 3` copied across three different day-ranges'
+`notes`) formalized into `between`. Re-running against the live stack
+initially still showed the old, flat, 0%-fired-rate result twice — traced to
+a previously-documented environment quirk (a bind-mounted file edit doesn't
+reliably propagate into an already-running container here, and a
+baked-in-code change needs an image rebuild, not just a restart); both
+containers were stale. After `docker compose build api && ... --force-recreate`,
+the **real** result: `criteria_reuse` still never fires (unrelated — the
+corpus genuinely has zero `criteria`-type chunks); `vocabulary` now fires for
+real (2/69 `well_supported`, 2/4 `missing_info_expected`) with a measurably
+different ranking (`well_supported` MRR@8 0.1075→0.1171; `missing_info_expected`
+MRR@8 0.0417→0.125) — the mechanism works end to end, though the sample is
+far too small to draw a production conclusion from. Full account in
+`DEVIATIONS.md` #153/#154.
+
 ### Repository layout
 
 ```
@@ -843,7 +931,9 @@ backend/
     memory/         conversation, patient_context (recommendation guard), checkpointer
     hitl/           escalation, decisions (accept-axis effects), triggers
     rubric/         11 domains, workflow state machine, IRR, tasks
-    eval/           harness, metrics, run CLI, question_gen/ (planner/generate/validate)
+    eval/           harness, metrics, run CLI, question_gen/ (planner/generate/validate),
+                    retrieval_tuning/, model_ablation/, orchestration_ablation/
+    records/        criteria matching, field access/policy, concepts.py (SCOPE-2.6, eval-only)
     llm/            LLMGateway, offline stub + stub_server
     auth/ crypto/ audit/   AuthProvider, CryptoProvider, append-only audit writer
   alembic/          real initial migration (28 tables, RLS, audit trigger — DEVIATIONS #61-63)
@@ -855,8 +945,9 @@ frontend/           Vite + React + TS: LoginPage, QueryPage, ReviewPage (rank
                     mode), EscalationsPage (standalone accept axis),
                     components/, api/client.ts, auth.ts
 deploy/             nginx.conf, postgres init SQL (schemas + append-only audit grants)
-data/               record_schema.json; sample_guidelines/ (+ manifest);
-                    patient_records/{synthetic,deidentified/<dataset>}/
+data/               record_schema.json; clinical_concepts.yaml (SCOPE-2.6
+                    vocabulary template, TODO_CONFIRM); sample_guidelines/
+                    (+ manifest); patient_records/{synthetic,deidentified/<dataset>}/
 ```
 
 ---
@@ -1026,11 +1117,20 @@ All config is via environment variables / `.env` (secrets via
 
 ## Data
 
-- `data/record_schema.json` — the fixed patient-record schema **v1.3.0**
-  (DEVIATIONS.md #23, #32, #35, #39). One canonical, flat, source-agnostic
+- `data/record_schema.json` — the fixed patient-record schema **v1.4.0**
+  (DEVIATIONS.md #23, #32, #35, #39, #139). One canonical, flat, source-agnostic
   model; every source maps onto it via its own `field_mapping.yaml` / adapter.
   `given_name`/`family_name` optional; `Medication`/`Intervention` carry
-  `started_at` + `stopped_at`.
+  `started_at` + `stopped_at`; `maternal_risk_factors[]` (1.4.0) is a
+  maternal-history sign list, same shape as `examination_findings[]` but kept
+  distinct from the newborn's own signs.
+- `data/clinical_concepts.yaml` — operator-authored, attestation-gated
+  clinical-concept vocabulary for `SCOPE-2.6`/`ARCH-042` (`PRD-057`; DEVIATIONS.md
+  #143/#144/#146/#148/#149). Ships as a `DATASET.md`-style template — every
+  `TODO_CONFIRM` must be replaced by the operator (threshold, `source`
+  citation, optional `synonyms`) before `app/records/concepts.py`'s loader
+  will use it; currently consumed only by the Phase 7 orchestration ablation
+  (`PHASE7-PROPOSAL.md`), never by any agent, route, or answer path.
 - `data/patient_records/` — patient record data (all files **gitignored**;
   only `DATASET.md` / `field_mapping.yaml` / `.gitkeep` are tracked):
   - `synthetic/` — output of `make gen-data` (a **fallback**). Domain via

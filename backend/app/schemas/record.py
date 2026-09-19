@@ -32,6 +32,9 @@ Version history:
          Intervention + interventions[]; given_name/family_name widened to
          optional (de-identified data has no names, C2) — DEVIATIONS #35, #38
   1.3.0  + Medication.stopped_at, Intervention.stopped_at (interval end) — DEVIATIONS #39
+  1.4.0  + maternal_risk_factors[] (reuses ExamFinding's name/present/recorded_at
+         shape — a maternal-history sign, not a newborn exam finding, kept as its
+         own list rather than folded into examination_findings) — DEVIATIONS #139
 All additions are optional/nullable; older records still validate.
 """
 
@@ -41,7 +44,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 SYNTHETIC_PROVENANCE = "synthetic-generator-v1"
 DEIDENTIFIED_PROVENANCE = "deidentified-anonymised"
 
@@ -136,6 +139,10 @@ class PatientRecord(BaseModel):
     interventions: list[Intervention] = Field(default_factory=list)  # 1.2.0
     vitals: list[Vitals] = Field(default_factory=list)
     labs: list[LabResult] = Field(default_factory=list)
+    # maternal-history signs (e.g. maternal infection, PROM) -- same
+    # present/absent shape as ExamFinding but distinct from the newborn's own
+    # examination_findings[] (1.4.0)
+    maternal_risk_factors: list[ExamFinding] = Field(default_factory=list)
 
     # free text (encrypted at rest; treated as PHI)
     clinical_notes: str | None = None

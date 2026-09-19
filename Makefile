@@ -5,7 +5,7 @@ BE      ?= cd backend &&
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
         prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock \
-        retrieval-tuning-report model-ablation-report
+        retrieval-tuning-report model-ablation-report orchestration-ablation-report
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -70,3 +70,6 @@ model-ablation-report: ## SapBERT/MedCPT/BM25 embedding ablation -> 2-panel PNG 
 	# MODEL_ABLATION_BACKEND=local (the default, "stub", needs neither — see
 	# PHASE2-EMBEDDING-ABLATION-PROPOSAL.md).
 	$(BE) pip install -q -e ".[retrieval-tuning,local-models]" && python -m scripts.run_model_ablation
+
+orchestration-ablation-report: ## Phase 7 single-stage/criteria-reuse/vocabulary ablation -> 3-panel PNG report (PRD-111); needs real Qdrant+Postgres+seeded eval questions; Arm C needs an attested data/clinical_concepts.yaml
+	$(BE) pip install -q -e ".[retrieval-tuning]" && python -m scripts.run_orchestration_ablation

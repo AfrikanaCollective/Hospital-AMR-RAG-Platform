@@ -9,7 +9,15 @@ import app.audit.log as audit_log
 from app.crypto.provider import get_crypto
 from app.db.models.records import PatientRecord as PatientRecordRow
 from app.records import access
-from app.schemas.record import Encounter, LabResult, PatientRecord, Vitals
+from app.schemas.record import (
+    Encounter,
+    ExamFinding,
+    Intervention,
+    LabResult,
+    Medication,
+    PatientRecord,
+    Vitals,
+)
 
 PATIENT_ID = uuid.uuid4()
 
@@ -60,6 +68,44 @@ def test_extract_features_uses_latest_vitals() -> None:
     assert features["encounter.gestational_age_weeks"] == 32.0
     assert features["labs.CRP"] == 12.0
     assert "given_name" not in features  # identity fields excluded
+
+
+def test_extract_features_keeps_maternal_risk_factors_distinct_from_exam_findings() -> None:
+    record = PatientRecord(
+        record_id="r2",
+        mrn="MRN-2",
+        examination_findings=[ExamFinding(name="apnoea", present=False)],
+        maternal_risk_factors=[ExamFinding(name="prom", present=True)],
+    )
+    features = access.extract_features(record)
+    assert features["examination_findings.apnoea"] is False  # assessed, negative
+    assert features["maternal_risk_factors.prom"] is True
+    assert "maternal_risk_factors.apnoea" not in features
+    assert "examination_findings.prom" not in features
+
+
+def test_extract_features_distinguishes_not_given_meds_and_interventions() -> None:
+    """DEVIATIONS #138/#141/#142: medications/interventions record an ACTION
+    (True = given, False = not given) -- distinct from examination_findings/
+    maternal_risk_factors, which record a SIGN (True/False = assessed present/
+    absent). A documented "not given" (active=False) must be a real feature,
+    not silently dropped by the given-only aggregate `.active` lists."""
+    record = PatientRecord(
+        record_id="r3",
+        mrn="MRN-3",
+        medications=[
+            Medication(name="gentamicin", active=True),
+            Medication(name="penicillin", active=False),
+        ],
+        interventions=[Intervention(name="cpap", active=False)],
+    )
+    features = access.extract_features(record)
+    assert features["medications.gentamicin"] is True  # given
+    assert features["medications.penicillin"] is False  # not given
+    assert features["medications.active"] == ["gentamicin"]  # unchanged aggregate
+    assert features["interventions.cpap"] is False  # not given
+    assert "interventions.active" not in features  # nothing was given
+    assert "medications.oxygen" not in features  # never documented -> no key
 
 
 def _allow_all(session, role, purpose, field_paths):  # noqa: ANN001, ARG001

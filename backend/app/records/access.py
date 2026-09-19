@@ -119,6 +119,28 @@ def _latest_labs_features(dumped: dict) -> dict[str, Any]:
     }
 
 
+# Repeating groups shaped {name: <concept>, <value_key>: <value>} -- mirrors
+# app.ingestion.records._NAME_VALUE_LIST_FIELDS. `value_key`'s meaning differs
+# by family and is never collapsed into one concept: for medications/
+# interventions, True/False records an ACTION (given / not given); for
+# examination_findings/maternal_risk_factors, True/False records a SIGN
+# (assessed present / assessed absent). Either way, a per-name feature
+# preserves that real, non-null value distinct from "never documented" (no
+# key at all) -- unlike the `medications.active`/`interventions.active`
+# aggregates below, which only ever list the given/active names
+# (DEVIATIONS #138/#141/#142).
+_NAME_VALUE_FEATURE_FIELDS = (
+    ("medications", "active"),
+    ("interventions", "active"),
+    ("examination_findings", "present"),
+    ("maternal_risk_factors", "present"),
+)
+
+
+def _name_value_features(items: list[dict], prefix: str, value_key: str) -> dict[str, Any]:
+    return {f"{prefix}.{name}": item.get(value_key) for item in items if (name := item.get("name"))}
+
+
 def _list_and_flag_features(dumped: dict) -> dict[str, Any]:
     features: dict[str, Any] = {}
     if dumped.get("problems"):
@@ -131,10 +153,8 @@ def _list_and_flag_features(dumped: dict) -> dict[str, Any]:
     active_interventions = [i["name"] for i in dumped.get("interventions", []) if i.get("active")]
     if active_interventions:
         features["interventions.active"] = active_interventions
-    for finding in dumped.get("examination_findings", []):
-        name = finding.get("name")
-        if name:
-            features[f"examination_findings.{name}"] = finding.get("present")
+    for prefix, value_key in _NAME_VALUE_FEATURE_FIELDS:
+        features.update(_name_value_features(dumped.get(prefix, []), prefix, value_key))
     if dumped.get("date_of_birth"):
         features["date_of_birth"] = dumped["date_of_birth"]
     if dumped.get("sex"):
