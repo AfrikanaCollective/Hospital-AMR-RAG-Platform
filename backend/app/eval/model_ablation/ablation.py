@@ -20,11 +20,30 @@ Uses the standard Cormack et al. (2009) formula with `settings.rrf_k`
 "matching Qdrant's own internal constant", DEVIATIONS.md #49) — this is not
 expected to reproduce Qdrant's fused scores number-for-number, only to be a
 reasonable, consistently-applied combine across the three ablation arms.
+
+**Single-stage vs. multi-stage (panel B only, DEVIATIONS.md #184)**: per
+follow-up request, panel B (MRR@MRR_K) additionally splits each of the four
+arms above into a single-stage point (raw question text — identical
+computation/values to every prior run) and a multi-stage point (query
+augmented with Phase 7's operator-vocabulary expansion, `VOCABULARY`/Arm C
+from `app.eval.orchestration_ablation`, reused unchanged). `criteria_reuse`
+(Arm B) was deliberately NOT used for "multi-stage" — documented
+(DEVIATIONS.md #152/#159) as byte-identical to single-stage on this corpus
+(zero `criteria`-type chunks, structurally unfireable), so it would show no
+difference at all; `vocabulary` is standalone-computable before any
+retrieval (`build_arm_c_query`) and is the only Phase 7 arm that can
+actually move this chart. Panel A (recall@k) is untouched — still
+single-stage only, per the request's own scope ("for panel B ..."). When
+`data/clinical_concepts.yaml` isn't attested, multi-stage is skipped
+entirely (same convention as Phase 7's own `vocabulary_attested` flag) and
+panel B falls back to its previous single-stage-only appearance.
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -32,21 +51,34 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.eval.metrics import mrr, precision_recall_at_k
 from app.eval.model_ablation.encoders import Encoder, get_medcpt_encoders, get_sapbert_encoder
+from app.eval.orchestration_ablation.ablation import load_attested_vocabulary
+from app.eval.orchestration_ablation.augment import (
+    build_arm_c_query,
+    load_synthetic_record_index,
+    resolve_source_record,
+)
 from app.eval.retrieval_tuning.sweep import (
     SweepQuestion,
     fetch_calibration_questions,
 )
 from app.ingestion.embed import embed_texts
+from app.records.concepts import ConceptVocabulary
 from app.retrieval.hybrid import _expand_abbreviations
 from app.retrieval.sparse import query_sparse_vector
 from app.retrieval.vectorstore import QdrantVectorStore
+from app.schemas.record import PatientRecord
 
-K_VALUES: tuple[int, ...] = tuple(range(2, 61, 2))  # matches retrieval_tuning.sweep.K_VALUES
-MRR_K = 24  # matches retrieval_tuning.sweep.MRR_K, for direct comparability
+K_VALUES: tuple[int, ...] = tuple(range(2, 21, 2))  # panel A's own grid, per follow-up request
+MRR_K = 12  # matches retrieval_tuning.sweep.MRR_K, for direct comparability (DEVIATIONS #183)
 
 ARMS: tuple[str, ...] = ("sapbert_bm25", "medcpt_bm25", "sapbert_medcpt_bm25")
 REFERENCE_ARM = "rrf_production"
 ALL_ARMS: tuple[str, ...] = (*ARMS, REFERENCE_ARM)
+
+# Panel B's stage dimension (DEVIATIONS.md #184) — see module docstring.
+SINGLE_STAGE = "single_stage"
+MULTI_STAGE = "multi_stage"
+_DEFAULT_CONCEPTS_PATH = "data/clinical_concepts.yaml"
 
 
 @dataclass(frozen=True)
@@ -113,7 +145,53 @@ def _rrf_combine(rankings: list[list[str]], *, rrf_k: int) -> list[str]:
 class QuestionArmRankings:
     question_id: str
     gold_chunk_ids: frozenset[str]
-    rankings: dict[str, list[str]]  # arm name -> full ranked chunk_ids
+    rankings: dict[str, list[str]]  # arm name -> full ranked chunk_ids (single-stage)
+    # Panel B's multi-stage rankings (DEVIATIONS.md #184) — same arm keys as
+    # `rankings`, computed from the vocabulary-augmented query text. `None`
+    # when the whole run has no attested vocabulary (Arm C skipped entirely,
+    # same convention as `app.eval.orchestration_ablation`'s
+    # `vocabulary_attested`); identical to `rankings` for a question where
+    # augmentation didn't fire (no resolvable record, or no concept match).
+    multi_stage_rankings: dict[str, list[str]] | None = None
+    multi_stage_fired: bool = False
+
+
+def _rank_text(
+    store: QdrantVectorStore,
+    text: str,
+    corpus: Corpus,
+    *,
+    sapbert_encoder: Encoder,
+    sapbert_chunk_matrix: np.ndarray,
+    medcpt_query_encoder: Encoder,
+    medcpt_chunk_matrix: np.ndarray,
+    rrf_k: int,
+) -> dict[str, list[str]]:
+    """Every ablation arm's combined ranking plus the fresh production RRF
+    reference, for one already-expanded query text — factored out of
+    `rank_question` so panel B's multi-stage variant (DEVIATIONS.md #184)
+    can reuse it against a second, augmented text without duplicating the
+    per-channel wiring."""
+    bm25_rank = _bm25_rank(store, text, corpus.chunk_ids)
+
+    sapbert_qvec = sapbert_encoder.encode([text])[0]
+    sapbert_rank = _cosine_rank(sapbert_qvec, sapbert_chunk_matrix, corpus.chunk_ids)
+
+    medcpt_qvec = medcpt_query_encoder.encode([text])[0]
+    medcpt_rank = _cosine_rank(medcpt_qvec, medcpt_chunk_matrix, corpus.chunk_ids)
+
+    dense = embed_texts([text], is_query=True)[0]
+    sparse = query_sparse_vector(text)
+    n = len(corpus.chunk_ids)
+    prod_hits = store.hybrid_search(dense=dense, sparse=sparse, prefetch_limit=n, limit=n)
+    rrf_production = [h["chunk_id"] for h in prod_hits]
+
+    return {
+        "sapbert_bm25": _rrf_combine([sapbert_rank, bm25_rank], rrf_k=rrf_k),
+        "medcpt_bm25": _rrf_combine([medcpt_rank, bm25_rank], rrf_k=rrf_k),
+        "sapbert_medcpt_bm25": _rrf_combine([sapbert_rank, medcpt_rank, bm25_rank], rrf_k=rrf_k),
+        REFERENCE_ARM: rrf_production,
+    }
 
 
 def rank_question(
@@ -126,47 +204,82 @@ def rank_question(
     medcpt_query_encoder: Encoder,
     medcpt_chunk_matrix: np.ndarray,
     rrf_k: int,
+    vocabulary: ConceptVocabulary | None = None,
+    record: PatientRecord | None = None,
 ) -> QuestionArmRankings:
     """Embeds/queries this question once per channel and produces every
     ablation arm's combined ranking plus the fresh production RRF reference
     (recomputed live, not a hardcoded historical number — see
-    PHASE2-EMBEDDING-ABLATION-PROPOSAL.md §5's "reference points" note)."""
+    PHASE2-EMBEDDING-ABLATION-PROPOSAL.md §5's "reference points" note).
+
+    `vocabulary`/`record` are optional (default `None`, meaning "no
+    multi-stage computed for this question" — preserves every prior caller's
+    behavior unchanged). When `vocabulary` is not `None`, also computes
+    panel B's multi-stage rankings (DEVIATIONS.md #184) via
+    `app.eval.orchestration_ablation.augment.build_arm_c_query`, reusing the
+    exact same Phase 7 augmentation Arm C already uses — falls back to the
+    single-stage rankings (no second embed/query round-trip) whenever
+    augmentation doesn't fire for this question, matching Phase 7's own
+    "Arm C == Arm A" degradation."""
     expanded = _expand_abbreviations(question.text)
+    single_stage_rankings = _rank_text(
+        store,
+        expanded,
+        corpus,
+        sapbert_encoder=sapbert_encoder,
+        sapbert_chunk_matrix=sapbert_chunk_matrix,
+        medcpt_query_encoder=medcpt_query_encoder,
+        medcpt_chunk_matrix=medcpt_chunk_matrix,
+        rrf_k=rrf_k,
+    )
 
-    bm25_rank = _bm25_rank(store, expanded, corpus.chunk_ids)
+    multi_stage_rankings: dict[str, list[str]] | None = None
+    multi_stage_fired = False
+    if vocabulary is not None:
+        augmented = build_arm_c_query(question.text, vocabulary, record)
+        multi_stage_fired = augmented.fired
+        if augmented.fired:
+            multi_expanded = _expand_abbreviations(augmented.text)
+            multi_stage_rankings = _rank_text(
+                store,
+                multi_expanded,
+                corpus,
+                sapbert_encoder=sapbert_encoder,
+                sapbert_chunk_matrix=sapbert_chunk_matrix,
+                medcpt_query_encoder=medcpt_query_encoder,
+                medcpt_chunk_matrix=medcpt_chunk_matrix,
+                rrf_k=rrf_k,
+            )
+        else:
+            multi_stage_rankings = single_stage_rankings
 
-    sapbert_qvec = sapbert_encoder.encode([expanded])[0]
-    sapbert_rank = _cosine_rank(sapbert_qvec, sapbert_chunk_matrix, corpus.chunk_ids)
-
-    medcpt_qvec = medcpt_query_encoder.encode([expanded])[0]
-    medcpt_rank = _cosine_rank(medcpt_qvec, medcpt_chunk_matrix, corpus.chunk_ids)
-
-    dense = embed_texts([expanded], is_query=True)[0]
-    sparse = query_sparse_vector(expanded)
-    n = len(corpus.chunk_ids)
-    prod_hits = store.hybrid_search(dense=dense, sparse=sparse, prefetch_limit=n, limit=n)
-    rrf_production = [h["chunk_id"] for h in prod_hits]
-
-    rankings = {
-        "sapbert_bm25": _rrf_combine([sapbert_rank, bm25_rank], rrf_k=rrf_k),
-        "medcpt_bm25": _rrf_combine([medcpt_rank, bm25_rank], rrf_k=rrf_k),
-        "sapbert_medcpt_bm25": _rrf_combine([sapbert_rank, medcpt_rank, bm25_rank], rrf_k=rrf_k),
-        REFERENCE_ARM: rrf_production,
-    }
     return QuestionArmRankings(
         question_id=question.question_id,
         gold_chunk_ids=question.gold_chunk_ids,
-        rankings=rankings,
+        rankings=single_stage_rankings,
+        multi_stage_rankings=multi_stage_rankings,
+        multi_stage_fired=multi_stage_fired,
     )
 
 
 @dataclass(frozen=True)
 class AblationResult:
-    # each row: {"k": int, "arm": str, "recall": float}
+    # each row: {"k": int, "arm": str, "recall": float} — single-stage only (panel A)
     recall_rows: list[dict]
-    # each row: {"arm": str, "mrr": float}
+    # each row: {"arm": str, "stage": str, "mrr": float, "ci_low": float, "ci_high": float}
+    # (panel B; DEVIATIONS.md #184) — "stage" is SINGLE_STAGE or MULTI_STAGE
     mrr_rows: list[dict]
     n_questions: int
+    # False when no question in this run had a multi-stage ranking computed
+    # (vocabulary not attested for the whole run) — mrr_rows then carries
+    # SINGLE_STAGE rows only, and panel B should render its previous,
+    # single-stage-only appearance.
+    multi_stage_available: bool = False
+    # Fraction of questions where Arm C's vocabulary augmentation actually
+    # changed the query text (0.0 when multi_stage_available is False) —
+    # diagnostic only, same convention as
+    # orchestration_ablation.SliceReport.fired_rate.
+    multi_stage_fired_rate: float = 0.0
 
 
 def _mean(values: list[float]) -> float:
@@ -217,15 +330,61 @@ def run_ablation(rankings: list[QuestionArmRankings]) -> AblationResult:
     for arm in ALL_ARMS:
         scores = [mrr(r.rankings[arm][:MRR_K], set(r.gold_chunk_ids)) for r in rankings]
         ci_low, ci_high = _bootstrap_ci(scores, rng=rng)
-        mrr_rows.append({"arm": arm, "mrr": _mean(scores), "ci_low": ci_low, "ci_high": ci_high})
+        mrr_rows.append(
+            {
+                "arm": arm,
+                "stage": SINGLE_STAGE,
+                "mrr": _mean(scores),
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+            }
+        )
 
-    return AblationResult(recall_rows=recall_rows, mrr_rows=mrr_rows, n_questions=len(rankings))
+    multi_stage_available = any(r.multi_stage_rankings is not None for r in rankings)
+    multi_stage_fired_rate = 0.0
+    if multi_stage_available:
+        multi_stage_fired_rate = _mean([1.0 if r.multi_stage_fired else 0.0 for r in rankings])
+        for arm in ALL_ARMS:
+            scores = [
+                mrr((r.multi_stage_rankings or r.rankings)[arm][:MRR_K], set(r.gold_chunk_ids))
+                for r in rankings
+            ]
+            ci_low, ci_high = _bootstrap_ci(scores, rng=rng)
+            mrr_rows.append(
+                {
+                    "arm": arm,
+                    "stage": MULTI_STAGE,
+                    "mrr": _mean(scores),
+                    "ci_low": ci_low,
+                    "ci_high": ci_high,
+                }
+            )
+
+    return AblationResult(
+        recall_rows=recall_rows,
+        mrr_rows=mrr_rows,
+        n_questions=len(rankings),
+        multi_stage_available=multi_stage_available,
+        multi_stage_fired_rate=multi_stage_fired_rate,
+    )
 
 
-def run_full_ablation(session: Session, store: QdrantVectorStore) -> AblationResult:
+def run_full_ablation(
+    session: Session,
+    store: QdrantVectorStore,
+    *,
+    records_dir: str | None = None,
+    concepts_path: str | Path = _DEFAULT_CONCEPTS_PATH,
+) -> AblationResult:
     """Wires fetch -> embed -> rank -> aggregate for a real (or stub) run.
     Kept separate from `run_ablation` so the aggregation math stays testable
-    without a Qdrant/model dependency (CLAUDE.md §5)."""
+    without a Qdrant/model dependency (CLAUDE.md §5).
+
+    `records_dir`/`concepts_path` feed panel B's multi-stage computation
+    (DEVIATIONS.md #184) — same defaults/attestation convention as
+    `app.eval.orchestration_ablation.run_full_ablation`. When
+    `concepts_path` isn't attested, `vocabulary` is `None` and every
+    question is ranked single-stage only, exactly as before this change."""
     settings = get_settings()
     questions = fetch_calibration_questions(session)
     if not questions:
@@ -242,6 +401,11 @@ def run_full_ablation(session: Session, store: QdrantVectorStore) -> AblationRes
         np.asarray(medcpt_article_encoder.encode(corpus.texts), dtype=np.float64)
     )
 
+    vocabulary, _vocab_error = load_attested_vocabulary(concepts_path)
+    record_index: dict[uuid.UUID, dict] = (
+        load_synthetic_record_index(records_dir) if vocabulary is not None else {}
+    )
+
     rankings = [
         rank_question(
             store,
@@ -252,6 +416,10 @@ def run_full_ablation(session: Session, store: QdrantVectorStore) -> AblationRes
             medcpt_query_encoder=medcpt_query_encoder,
             medcpt_chunk_matrix=medcpt_chunk_matrix,
             rrf_k=settings.rrf_k,
+            vocabulary=vocabulary,
+            record=resolve_source_record(q.source_record_id, record_index)
+            if vocabulary is not None
+            else None,
         )
         for q in questions
     ]

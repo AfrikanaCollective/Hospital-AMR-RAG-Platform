@@ -195,3 +195,17 @@ def test_expected_outcome_and_provenance_enums_used_by_the_eval_query_filter() -
     # SQLAlchemy `select` (not itself exercised here — see module docstring).
     assert ExpectedOutcome.WELL_SUPPORTED == "well_supported"
     assert Provenance.AUTO_GENERATED == "auto_generated"
+
+
+def test_max_k_covers_mrr_k_and_both_chart_grids() -> None:
+    """Every ranked list `rank_question` produces is truncated to `_MAX_K`
+    before recall@k or MRR@MRR_K is computed from it -- if `_MAX_K` ever
+    fell below `MRR_K` (or either chart's own k grid), that chart would
+    silently compute a shallower metric than its own label claims, with no
+    error (DEVIATIONS.md #179 -- found when CHART2_K_VALUES's max dropped
+    below MRR_K for the first time)."""
+    from app.eval.retrieval_tuning.sweep import _MAX_K, CHART2_K_VALUES, K_VALUES, MRR_K
+
+    assert _MAX_K >= MRR_K
+    assert max(K_VALUES) <= _MAX_K
+    assert max(CHART2_K_VALUES) <= _MAX_K

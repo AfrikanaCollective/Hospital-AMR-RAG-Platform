@@ -18,6 +18,7 @@ DEVIATIONS.md entry (see README.md Phase 6 entry).
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -32,17 +33,20 @@ from app.retrieval.sparse import query_sparse_vector
 from app.retrieval.vectorstore import QdrantVectorStore
 from app.schemas.enums import ExpectedOutcome, Provenance
 
-K_VALUES: tuple[int, ...] = tuple(range(2, 61, 2))  # 2..60 step 2 (30 values); chart 1 x-axis
+K_VALUES: tuple[int, ...] = tuple(range(2, 21, 2))  # 2..20 step 2 (10 values); chart 1 x-axis,
+# narrowed from 2..60 step 2 per follow-up request (DEVIATIONS.md #178). _MAX_K below still
+# resolves to CHART2_K_VALUES's own max (48 as of this comment), so candidate depth/MRR_K
+# truncation are unaffected by this narrowing.
 ALPHA_VALUES: tuple[float, ...] = tuple(round(i / 10, 1) for i in range(11))  # 0.0..1.0 step 0.1
 # Chart 2's own focus-depth grid, independent of K_VALUES — changed per follow-up request to
-# 24..48 step 4 (7 values, DEVIATIONS.md #163; previously 4..36 step 4, #126; previously 3..36
-# step 3, #125; previously {20,22,...,40}, #124). Kept as a permanently separate constant rather
-# than folded into K_VALUES even now that this particular set is a subset of it again: chart 1
-# plots every K_VALUES point on one x-axis line per alpha, and this value has already changed
-# four times on follow-up request — coupling it to K_VALUES would mean each change either has to
-# check subset membership or risks silently densifying chart 1's curves with points nobody asked
-# to add there.
-CHART2_K_VALUES: tuple[int, ...] = tuple(range(24, 49, 4))
+# 8..16 step 2 (5 values, DEVIATIONS.md #179; previously 24..48 step 4, #163; previously 4..36
+# step 4, #126; previously 3..36 step 3, #125; previously {20,22,...,40}, #124). Kept as a
+# permanently separate constant rather than folded into K_VALUES even now that this particular
+# set is a subset of it again: chart 1 plots every K_VALUES point on one x-axis line per alpha,
+# and this value has already changed five times on follow-up request — coupling it to K_VALUES
+# would mean each change either has to check subset membership or risks silently densifying
+# chart 1's curves with points nobody asked to add there.
+CHART2_K_VALUES: tuple[int, ...] = tuple(range(8, 17, 2))
 # Independent of settings.candidate_k (ARCH-040) — see offline_fusion.py. Must stay comfortably
 # above max(K_VALUES, CHART2_K_VALUES): a candidate pool exactly equal to the deepest k would
 # silently cap recall@k at whatever recall@candidate_depth already was, rather than reflecting a
@@ -52,10 +56,23 @@ CANDIDATE_DEPTH = 100
 # (production's real depth, matching eval_min_precision_at_8's own k — PHASE6-PROPOSAL.md §5's
 # original justification, #121); briefly derived as "the best-recall k from chart 2"
 # (mechanically CHART2_K_VALUES's max, since recall@k is monotonically non-decreasing in k — #127);
-# now fixed at a specific chart-2 member, 24, per direct follow-up request (#128) — no longer
-# tied to either the production depth or the best-recall derivation.
-MRR_K = 24
-_MAX_K = max(*K_VALUES, *CHART2_K_VALUES)
+# fixed at a specific chart-2 member, 24, per direct follow-up request (#128); then 10 (#180),
+# 12 (#181), 6 (#182 — the first value that ISN'T a CHART2_K_VALUES member {8,10,12,14,16},
+# confirming MRR_K was never actually required to be one); now back to 12 (#183), the operator's
+# own choice after weighing the tradeoff directly (values are essentially flat across this whole
+# swept range regardless, so the deciding factor was interpretability: 12 sits inside panel B's
+# own k=8..16 range, 6 sat below its floor). No longer tied to the production depth or the
+# best-recall derivation either way.
+MRR_K = 12
+# Every ranked list `rank_question` produces is truncated to _MAX_K before
+# either recall@k (chart 1/2) or MRR@MRR_K (chart 3) is computed from it, so
+# _MAX_K must cover all three, not just the two chart-depth grids -- omitting
+# MRR_K here was a latent bug that happened to never bite because every prior
+# CHART2_K_VALUES had a max >= 24 (DEVIATIONS.md #179: CHART2_K_VALUES's max
+# dropped to 16 on this follow-up request, the first time it's ever been
+# below MRR_K, which would have silently truncated "MRR@24" to MRR@16 with no
+# error at all had this not included MRR_K explicitly).
+_MAX_K = max(*K_VALUES, *CHART2_K_VALUES, MRR_K)
 
 
 @dataclass(frozen=True)
@@ -63,6 +80,14 @@ class SweepQuestion:
     question_id: str
     text: str
     gold_chunk_ids: frozenset[str]
+    # Added for model_ablation's single-stage/multi-stage panel B split
+    # (DEVIATIONS.md #184) — resolves a question's own synthetic patient
+    # record for Phase 7-style vocabulary query augmentation. `None` for a
+    # question with no source record, or one sourced from a de-identified
+    # record (never resolved outside the synthetic index — see
+    # app.eval.orchestration_ablation.augment's module docstring). Additive:
+    # this module's own sweep never reads the field.
+    source_record_id: uuid.UUID | None = None
 
 
 def fetch_calibration_questions(session: Session) -> list[SweepQuestion]:
@@ -82,6 +107,7 @@ def fetch_calibration_questions(session: Session) -> list[SweepQuestion]:
             question_id=str(row.id),
             text=row.text,
             gold_chunk_ids=frozenset(row.gold_relevant_chunks),
+            source_record_id=row.source_record_id,
         )
         for row in rows
         if row.gold_relevant_chunks

@@ -163,7 +163,8 @@ def _finish(ax: plt.Axes, *, title: str, letter: str) -> None:
 
 
 def chart_k_vs_recall_by_alpha(result: SweepResult, ax: plt.Axes) -> None:
-    """Chart 1 (panel A): k (x, 2-60 step 2) vs recall@k (y, floor 0.3 by
+    """Chart 1 (panel A): k (x, 2-20 step 2 — narrowed from 2-60 step 2 per
+    follow-up request, DEVIATIONS.md #178) vs recall@k (y, floor 0.3 by
     default, extended down if real data is lower), one line per BM25 weight
     alpha (0-1 step 0.1), plus the RRF baseline."""
     df = pd.DataFrame(result.recall_rows)
@@ -200,8 +201,7 @@ def chart_k_vs_recall_by_alpha(result: SweepResult, ax: plt.Axes) -> None:
         label="RRF (production baseline)",
     )
 
-    k_ticks = sorted({v for v in df["k"].unique() if v % 10 == 0} | {min(df["k"])})
-    ax.set_xticks(k_ticks)
+    ax.set_xticks(sorted(df["k"].unique()))
     ax.set_ylim(_y_floor(swept["recall"], baseline["recall"]), _Y_TOP)
     ax.set_xlabel("k (chunks retrieved)", fontsize=8)
     ax.set_ylabel("Recall@k (known guideline chunk found)", fontsize=8)
@@ -217,9 +217,9 @@ def chart_k_vs_recall_by_alpha(result: SweepResult, ax: plt.Axes) -> None:
 def chart_alpha_vs_recall_by_k(result: SweepResult, ax: plt.Axes) -> None:
     """Chart 2 (panel B): alpha (x, 0-1 step 0.1) vs recall@k (y, floor 0.3
     by default, extended down if real data is lower), one line per k in
-    CHART2_K_VALUES (24, 28, ..., 48 — changed per follow-up request,
-    DEVIATIONS.md #163; previously 4, 8, ..., 36, #126), plus each k's RRF
-    baseline as a matching dotted horizontal reference. 7 series -> colored
+    CHART2_K_VALUES (8, 10, ..., 16 — changed per follow-up request,
+    DEVIATIONS.md #179; previously 24, 28, ..., 48, #163), plus each k's RRF
+    baseline as a matching dotted horizontal reference. 5 series -> colored
     with the same sequential blue ramp as chart 1's alpha, not the
     categorical order (see module docstring)."""
     df = pd.DataFrame(result.chart2_recall_rows)
@@ -271,9 +271,10 @@ def chart_alpha_vs_mrr(result: SweepResult, ax: plt.Axes) -> None:
     1/2's recall floor no dynamic extension is needed here), plus the RRF
     baseline. `k` = `MRR_K`, whose value has moved on follow-up request more
     than once (settings.top_k=8 originally, #121; the best-recall/deepest-
-    chart-2-k derivation, #127; now fixed at 24, #128) — deliberately read
-    from the module constant rather than hardcoded here, and the
-    title/ylabel below render whatever it currently is."""
+    chart-2-k derivation, #127; 24, #128; 10, #180; 12, #181; 6, #182; now
+    back to 12, #183) — deliberately read from the module constant rather
+    than hardcoded here, and the title/ylabel below render whatever it
+    currently is."""
     df = pd.DataFrame(result.mrr_rows)
     _style_axes(ax)
 

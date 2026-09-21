@@ -70,6 +70,14 @@ def result_segments_aad(result_id: uuid.UUID) -> bytes:
     return b"eval-result-segments:" + str(result_id).encode("utf-8")
 
 
+def result_multi_stage_answer_aad(result_id: uuid.UUID) -> bytes:
+    """AAD for `Result.multi_stage_answer_enc` (DEVIATIONS.md #186) — a
+    third, distinct label (same pattern as `result_segments_aad` vs.
+    `result_answer_aad`) so this audit-only answer's ciphertext is never
+    valid in the single-stage answer's slot or vice versa."""
+    return b"eval-result-multi-stage-answer:" + str(result_id).encode("utf-8")
+
+
 class Result(UUIDPk, TimestampMixin, Base):
     """id == result_id referenced by ratings (ARCH §4.5)."""
 
@@ -96,6 +104,24 @@ class Result(UUIDPk, TimestampMixin, Base):
     queue_state: Mapped[str] = mapped_column(
         String(16), default="not_queued"
     )  # not_queued | open | archived
+
+    # Audit-only multi-stage (Phase 7 vocabulary-augmented, PRD-111 Arm C)
+    # counterpart to the single-stage fields above (DEVIATIONS.md #186) —
+    # never rated, never read by `app.rubric.workflow`; exposed read-only by
+    # `GET /review-queue/{id}` for traceability/comparison. `multi_stage_query`
+    # is plaintext, matching `EvalQuestion.text`'s own (unencrypted)
+    # convention for generated narrative/query text; `multi_stage_fired=False`
+    # means the augmentation produced no different query for this record (no
+    # concept matched), in which case the *_enc/citations/reports fields below
+    # are left at their column defaults rather than duplicating the
+    # single-stage answer, to avoid a second real pipeline invocation (and
+    # its LLM-gateway cost) for a query that would be byte-identical anyway.
+    multi_stage_query: Mapped[str | None] = mapped_column(Text)
+    multi_stage_fired: Mapped[bool] = mapped_column(Boolean, default=False)
+    multi_stage_answer_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    multi_stage_citations: Mapped[list] = mapped_column(JSONB, default=list)
+    multi_stage_retrieval_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    multi_stage_grounding_report: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class RubricDomain(Base):

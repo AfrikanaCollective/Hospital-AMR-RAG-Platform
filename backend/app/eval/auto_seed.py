@@ -69,6 +69,22 @@ network call (generation, embedding, the pipeline) now happens *before*
 anything is added to the session, so a caught transient failure never
 leaves a half-written `EvalQuestion` pending for a later commit to
 accidentally sweep in.
+
+**Multi-stage audit fields (DEVIATIONS.md #186), per direct operator
+request**: each scenario's `Result` also carries a read-only, never-rated
+"multi-stage" counterpart — the same question text run through Phase 7's
+operator-vocabulary query augmentation (`app.eval.orchestration_ablation
+.augment.build_arm_c_query`, reused unchanged; PRD-111 Arm C), for
+audit/comparison purposes only. When augmentation doesn't fire for a given
+record (no concept matched — the common case; DEVIATIONS #154 found this
+fires on only ~2.9% of well_supported de-identified-sourced questions), the
+multi-stage query is recorded as identical to the single-stage one and no
+second pipeline invocation is made (`multi_stage_fired=False`, no extra
+LLM-gateway cost). When it does fire, the augmented text is run through the
+*same* real pipeline a second time and its full answer/citations/grounding
+report are persisted alongside the single-stage ones — the reviewer still
+rates only the single-stage answer; nothing about the rating workflow
+changes.
 """
 
 from __future__ import annotations
@@ -83,17 +99,35 @@ from sqlalchemy import func, select
 
 from app.config import get_settings
 from app.crypto.provider import get_crypto
-from app.db.models.eval import EvalQuestion, Result, result_answer_aad, result_segments_aad
+from app.db.models.eval import (
+    EvalQuestion,
+    Result,
+    result_answer_aad,
+    result_multi_stage_answer_aad,
+    result_segments_aad,
+)
 from app.eval.deidentified_source import load_deidentified_records
+
+# NOT imported at module level: `app.eval.orchestration_ablation.augment`
+# imports back from `app.eval.tasks`, which imports `run_auto_seed_review_queue`
+# from *this* module at ITS OWN module level -- a module-level import here
+# would be a real circular import (confirmed live: `ImportError: cannot
+# import name '_RECORD_ID_NAMESPACE' from partially initialized module
+# 'app.eval.tasks'`), not a hypothetical one. `load_attested_vocabulary`/
+# `build_arm_c_query` are imported lazily inside the functions that use them
+# instead -- same rationale/pattern as this module's own existing lazy
+# `app.agents.graph_runtime` import in `_invoke_pipeline` below.
 from app.eval.question_gen.diversity import is_near_duplicate
 from app.eval.question_gen.generate import QuestionGenerationFailed, generate_question
 from app.eval.question_gen.planner import Composition, allocate
 from app.ingestion.embed import embed_texts
 from app.llm.gateway import LLMGatewayError
 from app.logging import get_logger
+from app.records.concepts import ConceptVocabulary
 from app.schemas.citation import Citation
 from app.schemas.enums import ExpectedOutcome, ObservedOutcome, Provenance
 from app.schemas.query import AnswerSegment
+from app.schemas.record import PatientRecord
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -102,6 +136,41 @@ logger = get_logger(__name__)
 
 _LOAD_RECORDS_FN = load_deidentified_records
 _EMBED_FN = embed_texts
+
+# Default operator-attested vocabulary path for the multi-stage audit fields
+# (DEVIATIONS.md #186) — same default/env-override convention as
+# `scripts/run_orchestration_ablation.py`/`scripts/run_model_ablation.py`.
+_DEFAULT_CONCEPTS_PATH = "data/clinical_concepts.yaml"
+
+
+def _load_attested_vocabulary(path: str) -> tuple[ConceptVocabulary | None, str | None]:
+    # Lazy import -- see module docstring on the circular import through
+    # app.eval.tasks a module-level import here would hit. Wrapped in its
+    # own module-level function (rather than importing lazily inline at each
+    # call site) so it's a monkeypatchable seam, same pattern as
+    # `_LOAD_RECORDS_FN`/`_EMBED_FN`/`_INVOKE_PIPELINE_FN` below -- tests
+    # default this to "no vocabulary" (DEVIATIONS.md #186) so they stay
+    # deterministic regardless of whether `data/clinical_concepts.yaml`
+    # happens to exist and be attested in the environment running them.
+    from app.eval.orchestration_ablation.ablation import load_attested_vocabulary  # noqa: PLC0415
+
+    return load_attested_vocabulary(path)
+
+
+_LOAD_ATTESTED_VOCABULARY_FN = _load_attested_vocabulary
+
+
+def _build_arm_c_query(question_text: str, vocabulary: ConceptVocabulary, record: PatientRecord):
+    # Lazy import -- same circular-import reason as `_load_attested_vocabulary`
+    # above; wrapped the same way so it's an independently monkeypatchable
+    # seam for tests that want to control fired/not-fired without a fully
+    # realistic PatientRecord fixture.
+    from app.eval.orchestration_ablation.augment import build_arm_c_query  # noqa: PLC0415
+
+    return build_arm_c_query(question_text, vocabulary, record)
+
+
+_BUILD_ARM_C_QUERY_FN = _build_arm_c_query
 
 # Bounded scan through the shuffled record pool per expected-outcome slot:
 # generation failures (QuestionGenerationFailed) and diversity-filter
@@ -216,6 +285,7 @@ def _generate_one_scenario(
     *,
     dedup_threshold: float,
     gateway: object | None,
+    vocabulary: ConceptVocabulary | None,
 ) -> uuid.UUID | None:
     """One attempt: pick a candidate record, generate + validate a
     narrative, reject a near-duplicate, run the real pipeline, persist
@@ -274,6 +344,47 @@ def _generate_one_scenario(
     state.accepted_embeddings.append(embedding)
     state.used_this_run.add(patient_id)
 
+    # Multi-stage audit fields (DEVIATIONS.md #186) — Phase 7's
+    # operator-vocabulary query augmentation, reused unchanged, against this
+    # SAME record already in scope for the narrative above (no new PHI/
+    # de-identified-data boundary crossed). Pure Python, no network call, so
+    # computing `augmented` costs nothing even when the augmentation doesn't
+    # fire -- the second real pipeline invocation only happens when it
+    # actually produces a different query. `multi_stage_query` stays `None`
+    # when `vocabulary` itself is `None` (unattested for the whole run) --
+    # deliberately distinct from a computed-but-identical string, so a
+    # reader can tell "not computed this run" apart from "computed, this
+    # record just didn't match anything."
+    multi_stage_query: str | None = None
+    multi_stage_fired = False
+    multi_stage_out: dict | None = None
+    if vocabulary is not None:
+        augmented = _BUILD_ARM_C_QUERY_FN(
+            generated["text"], vocabulary, PatientRecord.model_validate(record)
+        )
+        multi_stage_query = augmented.text
+        multi_stage_fired = augmented.fired
+        if augmented.fired:
+            try:
+                multi_stage_out = _INVOKE_PIPELINE_FN(augmented.text)
+            except (httpx.HTTPError, LLMGatewayError) as exc:
+                # Best-effort: the single-stage result above is already
+                # complete and valid on its own -- a transient gateway error
+                # on the audit-only multi-stage side channel degrades to "no
+                # multi-stage answer for this item" rather than discarding
+                # the whole scenario (which would waste the narrative
+                # generation + embedding + single-stage pipeline call already
+                # made). `multi_stage_query`/`multi_stage_fired` are still
+                # recorded truthfully -- the augmentation DID produce a
+                # different query, the run of it just failed this time.
+                logger.warning(
+                    "auto_seed_review_queue: transient gateway error running the multi-stage "
+                    "(vocabulary-augmented) pipeline for record %r -- keeping the single-stage "
+                    "result, multi-stage answer left empty for this item: %s",
+                    patient_id,
+                    exc,
+                )
+
     generator_meta = dict(generated.get("generator_meta") or {})
     generator_meta["embedding"] = embedding
     # Which model produced `embedding` above — read back by
@@ -295,7 +406,13 @@ def _generate_one_scenario(
     session.add(question)
     session.flush()
 
-    result, answer_text, segment_dicts = _build_result(question, out)
+    result, answer_text, segment_dicts, multi_stage_answer_text = _build_result(
+        question,
+        out,
+        multi_stage_query=multi_stage_query,
+        multi_stage_fired=multi_stage_fired,
+        multi_stage_out=multi_stage_out,
+    )
     # PRD-109/ARCH-040 (Phase 6) found this scenario's own real, grounding-
     # verified citations (`result.citations`, just computed above) were
     # never written back onto the question that produced them —
@@ -320,6 +437,10 @@ def _generate_one_scenario(
     if segment_dicts is not None:
         result.answer_segments_enc = crypto.encrypt(
             json.dumps(segment_dicts).encode("utf-8"), aad=result_segments_aad(result.id)
+        )
+    if multi_stage_answer_text is not None:
+        result.multi_stage_answer_enc = crypto.encrypt(
+            multi_stage_answer_text.encode("utf-8"), aad=result_multi_stage_answer_aad(result.id)
         )
     # Commit per scenario, not once at the end of the whole run (DEVIATIONS.md
     # #115): a `target_count` in the dozens means real minutes of real LLM
@@ -365,31 +486,64 @@ def _observed_outcome_value(out: dict) -> str:
     return observed.value if hasattr(observed, "value") else str(observed)
 
 
+def _extract_answer_parts(out: dict) -> tuple[str | None, list[dict], list[dict] | None]:
+    """Maps one compiled-graph output onto `(answer_text, citations,
+    segment_dicts)` — the shared shape both the single-stage and multi-stage
+    (DEVIATIONS.md #186) extraction need, since both are the same compiled-
+    graph output. `out.get("escalation")` yields `(None, [], None)`: no
+    answer released, no citations, consistent with every field's `None`/
+    empty default."""
+    if out.get("escalation"):
+        return None, [], None
+    final = out.get("final_answer") or {}
+    segments = [AnswerSegment(**seg) for seg in final.get("segments", [])]
+    citations = [Citation(**c).model_dump(mode="json") for c in final.get("citations", [])]
+    answer_text = "\n".join(s.text for s in segments)
+    segment_dicts = [s.model_dump(mode="json") for s in segments]
+    return answer_text, citations, segment_dicts
+
+
 def _build_result(
-    question: EvalQuestion, out: dict
-) -> tuple[Result, str | None, list[dict] | None]:
+    question: EvalQuestion,
+    out: dict,
+    *,
+    multi_stage_query: str | None = None,
+    multi_stage_fired: bool = False,
+    multi_stage_out: dict | None = None,
+) -> tuple[Result, str | None, list[dict] | None, str | None]:
     """Map the compiled graph's raw output onto `eval.Result` columns — the
     same shape `app.agents.query_pipeline.assemble_and_persist_response`
     reads to build the live `/query` response, reused here for this
     offline/batch path (DEVIATIONS.md #113). Returns the row (with
-    `answer_enc`/`answer_segments_enc` still unset) alongside the plaintext
-    answer text and the segment list (`AnswerSegment` dicts, DEVIATIONS.md
-    #120) — the caller flushes first (materializing `Result.id`, needed as
-    the encryption AAD per `app.db.models.eval.result_answer_aad`/
-    `result_segments_aad`) and encrypts after, the same flush-then-encrypt
-    order `app.hitl.decisions._create_hitl_decision` already uses for
-    `edited_answer_enc`."""
+    `answer_enc`/`answer_segments_enc`/`multi_stage_answer_enc` still unset)
+    alongside the plaintext single-stage answer text, its segment list
+    (`AnswerSegment` dicts, DEVIATIONS.md #120), and the plaintext
+    multi-stage answer text (DEVIATIONS.md #186) — the caller flushes first
+    (materializing `Result.id`, needed as the encryption AAD per
+    `app.db.models.eval.result_answer_aad`/`result_segments_aad`/
+    `result_multi_stage_answer_aad`) and encrypts after, the same
+    flush-then-encrypt order `app.hitl.decisions._create_hitl_decision`
+    already uses for `edited_answer_enc`.
+
+    `multi_stage_out` is `None` whenever the augmented query was never run
+    (no vocabulary attested for this run, or the augmentation didn't fire
+    for this record) — in that case every `multi_stage_*` column besides
+    `multi_stage_query`/`multi_stage_fired` stays at its plain column
+    default (empty/`{}`), not a duplicate of the single-stage answer, per
+    DEVIATIONS.md #186's "no second invocation for a query that would be
+    byte-identical anyway" design."""
     settings = get_settings()
 
-    citations: list[dict] = []
-    answer_text: str | None = None
-    segment_dicts: list[dict] | None = None
-    if not out.get("escalation"):
-        final = out.get("final_answer") or {}
-        segments = [AnswerSegment(**seg) for seg in final.get("segments", [])]
-        citations = [Citation(**c).model_dump(mode="json") for c in final.get("citations", [])]
-        answer_text = "\n".join(s.text for s in segments)
-        segment_dicts = [s.model_dump(mode="json") for s in segments]
+    answer_text, citations, segment_dicts = _extract_answer_parts(out)
+
+    multi_stage_answer_text: str | None = None
+    multi_stage_citations: list[dict] = []
+    multi_stage_retrieval_snapshot: dict = {}
+    multi_stage_grounding_report: dict = {}
+    if multi_stage_out is not None:
+        multi_stage_answer_text, multi_stage_citations, _ = _extract_answer_parts(multi_stage_out)
+        multi_stage_retrieval_snapshot = {"items": multi_stage_out.get("retrieval") or []}
+        multi_stage_grounding_report = multi_stage_out.get("grounding_report") or {}
 
     result = Result(
         eval_question_id=question.id,
@@ -407,8 +561,13 @@ def _build_result(
             "retrieval_min_score": settings.retrieval_min_score,
         },
         queue_state="open",  # visible in the review queue immediately (not "not_queued")
+        multi_stage_query=multi_stage_query,
+        multi_stage_fired=multi_stage_fired,
+        multi_stage_citations=multi_stage_citations,
+        multi_stage_retrieval_snapshot=multi_stage_retrieval_snapshot,
+        multi_stage_grounding_report=multi_stage_grounding_report,
     )
-    return result, answer_text, segment_dicts
+    return result, answer_text, segment_dicts, multi_stage_answer_text
 
 
 def run_auto_seed_review_queue(
@@ -419,13 +578,31 @@ def run_auto_seed_review_queue(
     dataset_id: str | None = None,
     seed: int | None = None,
     gateway: object | None = None,
+    concepts_path: str = _DEFAULT_CONCEPTS_PATH,
 ) -> list[uuid.UUID]:
     """Top up the review queue to `target_count` auto-generated, auto-run
     results, sourced from de-identified records — each result backed by a
     distinct patient record, never reused across this or any prior run
     (DEVIATIONS.md #114). Returns the new `Result` ids created this run
     (empty if already at/above target, if no de-identified records are
-    available, or if every loaded record already has a scenario)."""
+    available, or if every loaded record already has a scenario).
+
+    `concepts_path` feeds the multi-stage audit fields (DEVIATIONS.md #186)
+    — same default/attestation convention as
+    `scripts/run_orchestration_ablation.py`. When it isn't attested, every
+    scenario this run creates simply has no multi-stage counterpart
+    (`multi_stage_query=None`, `multi_stage_fired=False`) — never a reason
+    to skip or fail the primary (single-stage) generation this function
+    exists for."""
+    vocabulary, vocab_error = _LOAD_ATTESTED_VOCABULARY_FN(concepts_path)
+    if vocabulary is None:
+        logger.warning(
+            "auto_seed_review_queue: multi-stage audit fields (DEVIATIONS #186) skipped for "
+            "this whole run -- %s is not attested: %s",
+            concepts_path,
+            vocab_error,
+        )
+
     settings = get_settings()
     already = _COUNT_EXISTING_AUTO_SEEDED_FN(session)
     remaining = target_count - already
@@ -479,6 +656,7 @@ def run_auto_seed_review_queue(
                 expected_outcome,
                 dedup_threshold=settings.qgen_dedup_threshold,
                 gateway=gateway,
+                vocabulary=vocabulary,
             )
             if result_id is not None:
                 created.append(result_id)

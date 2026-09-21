@@ -133,6 +133,23 @@ def _no_prior_history(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto_seed, "_EXISTING_EMBEDDINGS_FN", lambda session: [])  # noqa: ARG005
 
 
+@pytest.fixture(autouse=True)
+def _no_vocabulary_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: no attested vocabulary (DEVIATIONS.md #186) — every existing
+    test in this file predates the multi-stage audit fields and asserts
+    nothing about them, so they must stay behaviorally unchanged regardless
+    of whether `data/clinical_concepts.yaml` happens to exist and be
+    attested in the environment actually running them (it does inside the
+    `api`/`worker` containers, real read-only mount, but not on a bare host
+    checkout — this fixture makes the difference irrelevant). Tests that
+    specifically exercise the multi-stage path override this."""
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_ATTESTED_VOCABULARY_FN",
+        lambda path: (None, "not needed for this test"),  # noqa: ARG005
+    )
+
+
 def test_already_at_target_skips_without_loading_records(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 5)  # noqa: ARG005
     called = {"load": False}
@@ -536,3 +553,233 @@ def test_well_supported_result_answer_decrypts_to_the_rendered_segments(
             "grounding_note": None,
         }
     ]
+
+
+# ── Multi-stage audit fields (DEVIATIONS.md #186) ────────────────────────────
+
+
+class _FakeAugmentedQuery:
+    def __init__(self, text: str, *, fired: bool) -> None:
+        self.text = text
+        self.fired = fired
+
+
+def _multi_stage_pipeline_output(*_args: object, **_kwargs: object) -> dict:
+    """A second, distinguishable pipeline output — lets a test tell the
+    single-stage and multi-stage results apart by content, not just by
+    which field they landed in."""
+    return {
+        "observed_outcome": "well_supported",
+        "final_answer": {
+            "segments": [
+                {
+                    "type": "claim",
+                    "text": "Example Guideline recommends Y for the augmented query.",
+                    "citation_ids": ["c2"],
+                }
+            ],
+            "citations": [
+                {
+                    "citation_id": "c2",
+                    "chunk_id": "chunk-2",
+                    "document_id": "doc-1",
+                    "document_title": "Example Guideline",
+                    "document_version_id": "v1",
+                    "version_label": "2024 edition",
+                    "quote": "recommends Y",
+                    "section_number": "1.3",
+                    "page_start": 4,
+                    "page_end": 4,
+                    "char_start": 0,
+                    "char_end": 13,
+                    "quote_char_start": 0,
+                    "quote_char_end": 13,
+                }
+            ],
+        },
+        "retrieval": [{"chunk_id": "chunk-2", "score": 0.8}],
+        "grounding_report": {"status": "well_supported"},
+        "escalation": None,
+    }
+
+
+def test_multi_stage_fields_absent_when_vocabulary_not_attested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default fixture (`_no_vocabulary_by_default`) applies -- confirms the
+    common case explicitly rather than only by omission."""
+    monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_RECORDS_FN",
+        lambda *a, **k: [(RECORD_ID, RECORD)],  # noqa: ARG005
+    )
+    monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[1.0, 0.0] for _ in texts])  # noqa: ARG005
+    monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _well_supported_pipeline_output)
+
+    session = _FakeSession()
+    auto_seed.run_auto_seed_review_queue(
+        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+    )
+    result = session.results[0]
+    assert result.multi_stage_query is None
+    assert result.multi_stage_fired is False
+    assert result.multi_stage_answer_enc is None
+    assert result.multi_stage_citations == []
+
+
+def test_multi_stage_query_recorded_but_not_run_when_augmentation_does_not_fire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vocabulary attested, but this record matches no concept -- the query
+    is recorded as identical to the single-stage one and NO second pipeline
+    call is made (no wasted LLM-gateway cost for a query that wouldn't
+    differ)."""
+    monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_RECORDS_FN",
+        lambda *a, **k: [(RECORD_ID, RECORD)],  # noqa: ARG005
+    )
+    monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[1.0, 0.0] for _ in texts])  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_ATTESTED_VOCABULARY_FN",
+        lambda path: (object(), None),  # noqa: ARG005
+    )
+
+    calls: list[str] = []
+
+    def _invoke(question_text: str) -> dict:
+        calls.append(question_text)
+        return _well_supported_pipeline_output()
+
+    monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _invoke)
+    monkeypatch.setattr(
+        auto_seed,
+        "_BUILD_ARM_C_QUERY_FN",
+        lambda text, vocabulary, record: _FakeAugmentedQuery(text, fired=False),  # noqa: ARG005
+    )
+
+    session = _FakeSession()
+    auto_seed.run_auto_seed_review_queue(
+        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+    )
+    result = session.results[0]
+    assert len(calls) == 1  # only the single-stage invocation -- no wasted second call
+    assert result.multi_stage_query == GOOD_QUESTION
+    assert result.multi_stage_fired is False
+    assert result.multi_stage_answer_enc is None
+    assert result.multi_stage_citations == []
+
+
+def test_multi_stage_runs_a_second_pipeline_call_and_persists_its_own_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Augmentation fires -- a genuine second real-pipeline invocation is
+    made against the augmented text, and its full answer/citations are
+    persisted alongside (not instead of) the single-stage ones."""
+    from app.crypto.provider import get_crypto
+    from app.db.models.eval import result_multi_stage_answer_aad
+
+    monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_RECORDS_FN",
+        lambda *a, **k: [(RECORD_ID, RECORD)],  # noqa: ARG005
+    )
+    monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[1.0, 0.0] for _ in texts])  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_ATTESTED_VOCABULARY_FN",
+        lambda path: (object(), None),  # noqa: ARG005
+    )
+
+    augmented_text = GOOD_QUESTION + "; fake fast breathing"
+    calls: list[str] = []
+
+    def _invoke(question_text: str) -> dict:
+        calls.append(question_text)
+        if question_text == augmented_text:
+            return _multi_stage_pipeline_output()
+        return _well_supported_pipeline_output()
+
+    monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _invoke)
+    monkeypatch.setattr(
+        auto_seed,
+        "_BUILD_ARM_C_QUERY_FN",
+        lambda text, vocabulary, record: _FakeAugmentedQuery(augmented_text, fired=True),  # noqa: ARG005
+    )
+
+    session = _FakeSession()
+    auto_seed.run_auto_seed_review_queue(
+        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+    )
+    result = session.results[0]
+
+    assert calls == [GOOD_QUESTION, augmented_text]  # single-stage, then multi-stage
+    assert result.multi_stage_query == augmented_text
+    assert result.multi_stage_fired is True
+    assert result.multi_stage_citations[0]["citation_id"] == "c2"
+    assert result.multi_stage_retrieval_snapshot == {
+        "items": [{"chunk_id": "chunk-2", "score": 0.8}]
+    }
+    assert result.multi_stage_grounding_report == {"status": "well_supported"}
+    # The single-stage answer is untouched by the multi-stage run.
+    assert result.citations[0]["citation_id"] == "c1"
+
+    crypto = get_crypto()
+    plaintext = crypto.decrypt(
+        result.multi_stage_answer_enc, aad=result_multi_stage_answer_aad(result.id)
+    )
+    assert plaintext.decode("utf-8") == "Example Guideline recommends Y for the augmented query."
+
+
+def test_multi_stage_transient_gateway_error_keeps_the_single_stage_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient failure on the audit-only multi-stage side channel must
+    not discard the (already valid, already paid-for) single-stage result —
+    degrades to 'no multi-stage answer for this item', not a lost scenario."""
+    import httpx
+
+    monkeypatch.setattr(auto_seed, "_COUNT_EXISTING_AUTO_SEEDED_FN", lambda session: 0)  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_RECORDS_FN",
+        lambda *a, **k: [(RECORD_ID, RECORD)],  # noqa: ARG005
+    )
+    monkeypatch.setattr(auto_seed, "_EMBED_FN", lambda texts, **k: [[1.0, 0.0] for _ in texts])  # noqa: ARG005
+    monkeypatch.setattr(
+        auto_seed,
+        "_LOAD_ATTESTED_VOCABULARY_FN",
+        lambda path: (object(), None),  # noqa: ARG005
+    )
+
+    augmented_text = GOOD_QUESTION + "; fake fast breathing"
+
+    def _invoke(question_text: str) -> dict:
+        if question_text == augmented_text:
+            raise httpx.ConnectTimeout("boom")
+        return _well_supported_pipeline_output()
+
+    monkeypatch.setattr(auto_seed, "_INVOKE_PIPELINE_FN", _invoke)
+    monkeypatch.setattr(
+        auto_seed,
+        "_BUILD_ARM_C_QUERY_FN",
+        lambda text, vocabulary, record: _FakeAugmentedQuery(augmented_text, fired=True),  # noqa: ARG005
+    )
+
+    session = _FakeSession()
+    created = auto_seed.run_auto_seed_review_queue(
+        session, target_count=1, composition="100,0,0", gateway=_FakeGateway()
+    )
+    assert len(created) == 1  # the scenario still succeeds overall
+    result = session.results[0]
+    assert result.citations[0]["citation_id"] == "c1"  # single-stage answer intact
+    # multi_stage_query/fired still recorded truthfully -- augmentation DID
+    # produce a different query, only the run of it failed.
+    assert result.multi_stage_query == augmented_text
+    assert result.multi_stage_fired is True
+    assert result.multi_stage_answer_enc is None
+    assert result.multi_stage_citations == []

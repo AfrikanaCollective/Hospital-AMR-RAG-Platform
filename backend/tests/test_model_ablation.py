@@ -18,7 +18,9 @@ from app.eval.model_ablation.ablation import (
     ALL_ARMS,
     ARMS,
     MRR_K,
+    MULTI_STAGE,
     REFERENCE_ARM,
+    SINGLE_STAGE,
     QuestionArmRankings,
     _bm25_rank,
     _bootstrap_ci,
@@ -30,10 +32,37 @@ from app.eval.model_ablation.ablation import (
 )
 from app.eval.model_ablation.encoders import Encoder, get_medcpt_encoders, get_sapbert_encoder
 from app.eval.retrieval_tuning.sweep import SweepQuestion
+from app.records.concepts import Concept, ConceptVocabulary
 from app.retrieval.vectorstore import QdrantVectorStore
+from app.schemas.record import PatientRecord
 from tests.test_hybrid_retrieve import _seed_chunk
 
 _DENSE_DIM = 384
+
+_VOCABULARY = ConceptVocabulary(
+    authored_by="unit-test fixture",
+    authored_date="2026-09-19",
+    concepts=(
+        Concept(
+            name="fake_tachypnoea",
+            field="vitals.resp_rate_bpm",
+            operator=">",
+            value=60.0,
+            source="unit-test fixture, not a real clinical value",
+            synonyms=("fake fast breathing",),
+        ),
+    ),
+)
+
+_RECORD_THAT_MATCHES = PatientRecord.model_validate(
+    {
+        "schema_version": "1.4.0",
+        "dataset_provenance": "synthetic-generator-v1",
+        "record_id": "test-rec-1",
+        "mrn": "SYN-TEST-1",
+        "vitals": [{"resp_rate_bpm": 65.0}],
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +147,62 @@ def test_rank_question_returns_every_arm(store: QdrantVectorStore) -> None:
     assert set(result.rankings) == set(ALL_ARMS)
     for arm in ALL_ARMS:
         assert set(result.rankings[arm]) == {"c1", "c2"}
+    # No vocabulary passed -- multi-stage not computed, every prior caller's
+    # behavior preserved (DEVIATIONS.md #184).
+    assert result.multi_stage_rankings is None
+    assert result.multi_stage_fired is False
+
+
+def _rank_with_vocabulary(
+    store: QdrantVectorStore, *, record: PatientRecord | None
+) -> QuestionArmRankings:
+    target_text = "Blood cultures are recommended before starting antimicrobials."
+    corpus = fetch_corpus(store)
+    sapbert_encoder = get_sapbert_encoder()
+    medcpt_query_encoder, medcpt_article_encoder = get_medcpt_encoders()
+    sapbert_matrix = np.array(sapbert_encoder.encode(corpus.texts))
+    medcpt_matrix = np.array(medcpt_article_encoder.encode(corpus.texts))
+
+    question = SweepQuestion(question_id="q1", text=target_text, gold_chunk_ids=frozenset({"c1"}))
+    return rank_question(
+        store,
+        question,
+        corpus,
+        sapbert_encoder=sapbert_encoder,
+        sapbert_chunk_matrix=sapbert_matrix,
+        medcpt_query_encoder=medcpt_query_encoder,
+        medcpt_chunk_matrix=medcpt_matrix,
+        rrf_k=60,
+        vocabulary=_VOCABULARY,
+        record=record,
+    )
+
+
+def test_rank_question_computes_multi_stage_when_augmentation_fires(
+    store: QdrantVectorStore,
+) -> None:
+    _seed_chunk(store, 1, chunk_id="c1", text="Blood cultures are recommended.")
+    _seed_chunk(store, 2, chunk_id="c2", text="Vitamin K is given to newborns.")
+
+    result = _rank_with_vocabulary(store, record=_RECORD_THAT_MATCHES)
+
+    assert result.multi_stage_fired is True
+    assert result.multi_stage_rankings is not None
+    assert set(result.multi_stage_rankings) == set(ALL_ARMS)
+    for arm in ALL_ARMS:
+        assert set(result.multi_stage_rankings[arm]) == {"c1", "c2"}
+
+
+def test_rank_question_multi_stage_falls_back_to_single_stage_without_a_record(
+    store: QdrantVectorStore,
+) -> None:
+    _seed_chunk(store, 1, chunk_id="c1", text="Blood cultures are recommended.")
+    _seed_chunk(store, 2, chunk_id="c2", text="Vitamin K is given to newborns.")
+
+    result = _rank_with_vocabulary(store, record=None)
+
+    assert result.multi_stage_fired is False
+    assert result.multi_stage_rankings == result.rankings
 
 
 def test_encoder_stub_is_deterministic_and_independent_of_backend_instance() -> None:
@@ -190,6 +275,79 @@ def test_run_ablation_recall_and_mrr_on_a_small_known_grid() -> None:
     for row in result.mrr_rows:
         assert row["ci_low"] <= row["mrr"] <= row["ci_high"]
         assert row["ci_low"] >= 0.0 and row["ci_high"] <= 1.0
+
+    # No `multi_stage_rankings` on any fixture row -- panel B's split stays
+    # off, mrr_rows carries single-stage entries only (DEVIATIONS.md #184).
+    assert result.multi_stage_available is False
+    assert result.multi_stage_fired_rate == pytest.approx(0.0)
+    assert {row["stage"] for row in result.mrr_rows} == {SINGLE_STAGE}
+
+
+def test_run_ablation_splits_mrr_rows_by_stage_when_multi_stage_is_computed() -> None:
+    rankings = [
+        QuestionArmRankings(
+            question_id="q1",
+            gold_chunk_ids=frozenset({"gold1"}),
+            rankings={
+                "sapbert_bm25": ["distractor", "gold1"],
+                "medcpt_bm25": ["distractor", "gold1"],
+                "sapbert_medcpt_bm25": ["distractor", "gold1"],
+                REFERENCE_ARM: ["distractor", "gold1"],
+            },
+            # multi-stage augmentation fired and moved the gold chunk to rank 1
+            multi_stage_rankings={
+                "sapbert_bm25": ["gold1", "distractor"],
+                "medcpt_bm25": ["gold1", "distractor"],
+                "sapbert_medcpt_bm25": ["gold1", "distractor"],
+                REFERENCE_ARM: ["gold1", "distractor"],
+            },
+            multi_stage_fired=True,
+        ),
+        QuestionArmRankings(
+            question_id="q2",
+            gold_chunk_ids=frozenset({"gold2"}),
+            rankings={
+                "sapbert_bm25": ["distractor", "gold2"],
+                "medcpt_bm25": ["distractor", "gold2"],
+                "sapbert_medcpt_bm25": ["distractor", "gold2"],
+                REFERENCE_ARM: ["distractor", "gold2"],
+            },
+            # augmentation didn't fire for this question -- multi-stage ==
+            # single-stage, same convention as `rank_question`'s fallback.
+            multi_stage_rankings={
+                "sapbert_bm25": ["distractor", "gold2"],
+                "medcpt_bm25": ["distractor", "gold2"],
+                "sapbert_medcpt_bm25": ["distractor", "gold2"],
+                REFERENCE_ARM: ["distractor", "gold2"],
+            },
+            multi_stage_fired=False,
+        ),
+    ]
+
+    result = run_ablation(rankings)
+
+    assert result.multi_stage_available is True
+    assert result.multi_stage_fired_rate == pytest.approx(0.5)  # fired for q1, not q2
+    assert {row["stage"] for row in result.mrr_rows} == {SINGLE_STAGE, MULTI_STAGE}
+    assert {row["arm"] for row in result.mrr_rows} == set(ALL_ARMS)
+
+    single = next(
+        row["mrr"]
+        for row in result.mrr_rows
+        if row["arm"] == "sapbert_bm25" and row["stage"] == SINGLE_STAGE
+    )
+    multi = next(
+        row["mrr"]
+        for row in result.mrr_rows
+        if row["arm"] == "sapbert_bm25" and row["stage"] == MULTI_STAGE
+    )
+    # single-stage: gold at rank 2 for both questions -> mrr 0.5 each -> mean 0.5
+    assert single == pytest.approx(0.5)
+    # multi-stage: gold at rank 1 for q1 (augmentation fired), rank 2 for q2 -> mean 0.75
+    assert multi == pytest.approx(0.75)
+
+    # recall_rows (panel A) stays single-stage-only, untouched by the split.
+    assert all("stage" not in row for row in result.recall_rows)
 
 
 def test_bootstrap_ci_is_deterministic_with_a_fixed_seed() -> None:

@@ -14,13 +14,24 @@ things plotted here (`sapbert_bm25`, `medcpt_bm25`, `sapbert_medcpt_bm25`,
 unlike `retrieval_tuning.report`'s alpha/k hues — so this stays on the
 validated categorical order throughout; 4 series is well within its 8-hue
 CVD-safe count, no sequential ramp needed. `rrf_production` (what the
-system actually does today) is always the dashed neutral-gray reference,
+system actually does today) keeps the dashed neutral-gray identity color,
 same convention as the Phase 6 charts, never one of the three candidate
 arms' categorical hues.
 
 Panel letters sit outside the plot area (above/left of each panel), per the
 same layout established for the Phase 6 combined report (DEVIATIONS.md
 #130).
+
+Panel B's single-stage/multi-stage split (DEVIATIONS.md #184, follow-up
+request): color still encodes the embedding arm (categorical identity,
+unchanged from above); marker **shape** now encodes stage (circle =
+single-stage, triangle = multi-stage) instead of `rrf_production` getting
+its own diamond marker — with two independent visual dimensions in play,
+shape had to fully hand over to stage rather than partially carry arm
+identity too, so the legend carries two groups (color swatches for arm,
+grayscale-marker swatches for stage) rather than one. Falls back to a
+single circle marker per arm (previous appearance) when multi-stage wasn't
+computed (vocabulary not attested).
 """
 
 from __future__ import annotations
@@ -30,12 +41,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+from matplotlib.lines import Line2D
 
 from app.eval.model_ablation.ablation import (
     ALL_ARMS,
     ARMS,
     MRR_K,
+    MULTI_STAGE,
     REFERENCE_ARM,
+    SINGLE_STAGE,
     AblationResult,
 )
 
@@ -58,6 +72,13 @@ _DPI = 300
 _FIGSIZE = (9.5, 10.0)
 _Y_TOP = 1.0
 _Y_DEFAULT_FLOOR = 0.0  # unlike retrieval_tuning's 0.3 assumption, no floor assumption here yet
+
+_STAGE_MARKERS = {SINGLE_STAGE: "o", MULTI_STAGE: "^"}
+_STAGE_LABELS = {
+    SINGLE_STAGE: "Single-stage (raw question)",
+    MULTI_STAGE: "Multi-stage (vocab.-augmented)",
+}
+_STAGE_DODGE = {SINGLE_STAGE: -0.15, MULTI_STAGE: 0.15}
 
 
 def _y_floor(*value_groups: pd.Series) -> float:
@@ -118,9 +139,9 @@ def _finish(ax: plt.Axes, *, title: str, letter: str) -> None:
 
 
 def chart_k_vs_recall_by_arm(result: AblationResult, ax: plt.Axes) -> None:
-    """Panel A: k (x, 2-60 step 2, matching retrieval_tuning's grid for
-    comparability) vs recall@k (y), one line per candidate arm plus the
-    fresh production RRF reference."""
+    """Panel A: k (x, 2-20 step 2 — narrowed from the original 2-60 step 2
+    per follow-up request) vs recall@k (y), one line per candidate arm plus
+    the fresh production RRF reference."""
     df = pd.DataFrame(result.recall_rows)
     _style_axes(ax)
 
@@ -153,8 +174,7 @@ def chart_k_vs_recall_by_arm(result: AblationResult, ax: plt.Axes) -> None:
         label=REFERENCE_ARM,
     )
 
-    k_ticks = sorted({v for v in df["k"].unique() if v % 10 == 0} | {min(df["k"])})
-    ax.set_xticks(k_ticks)
+    ax.set_xticks(sorted(df["k"].unique()))
     ax.set_ylim(_y_floor(swept["recall"], baseline["recall"]), _Y_TOP)
     ax.set_xlabel("k (chunks retrieved)", fontsize=9)
     ax.set_ylabel("Recall@k (known guideline chunk found)", fontsize=9)
@@ -164,58 +184,95 @@ def chart_k_vs_recall_by_arm(result: AblationResult, ax: plt.Axes) -> None:
 
 
 def chart_mrr_by_arm(result: AblationResult, ax: plt.Axes) -> None:
-    """Panel B: MRR@24 (matching retrieval_tuning.sweep's current MRR_K, for
-    comparability), one point per arm with a 95% bootstrap CI error bar
-    (percentile method over per-question scores — `ablation._bootstrap_ci`),
-    per follow-up request (was a plain bar with no uncertainty shown,
-    DEVIATIONS.md #132). Still a genuine categorical comparison at one fixed
-    depth, not a swept dimension — dot+error-bar is the direct extension of
-    a bar mark once a point estimate needs its interval shown too."""
-    df = pd.DataFrame(result.mrr_rows).set_index("arm")
+    """Panel B: MRR@MRR_K (matching retrieval_tuning.sweep's current MRR_K,
+    for comparability — 12 as of DEVIATIONS #183, previously 24), one point
+    per arm with a 95% bootstrap CI error bar (percentile method over
+    per-question scores — `ablation._bootstrap_ci`), per follow-up request
+    (was a plain bar with no uncertainty shown, DEVIATIONS.md #132).
+
+    Single-stage vs. multi-stage split (DEVIATIONS.md #184, follow-up
+    request): when `result.multi_stage_available`, each arm gets two
+    dodged points — color still identifies the embedding arm, marker shape
+    now identifies stage (circle = single-stage, triangle = multi-stage;
+    Phase 7 Arm C's vocabulary augmentation, `app.eval.orchestration_ablation`)
+    — instead of one point per arm. Falls back to the previous single point
+    per arm (all circles) when multi-stage wasn't computed for this run
+    (vocabulary not attested)."""
+    df = pd.DataFrame(result.mrr_rows)
     _style_axes(ax)
     ax.grid(True, axis="y", color=_GRIDLINE, linewidth=1, linestyle="-")
     ax.grid(False, axis="x")
 
     order = list(ALL_ARMS)
-    colors = [*_CATEGORICAL[: len(ARMS)], _BASELINE_GRAY]
-    for xi, (arm, color) in enumerate(zip(order, colors, strict=True)):
-        if arm not in df.index:
-            continue
-        mean = df.loc[arm, "mrr"]
-        lo, hi = df.loc[arm, "ci_low"], df.loc[arm, "ci_high"]
-        ax.errorbar(
-            xi,
-            mean,
-            yerr=[[mean - lo], [hi - mean]],
-            fmt="none",
-            ecolor=color,
-            elinewidth=1.6,
-            capsize=4,
-            capthick=1.6,
-            zorder=2,
-        )
-        marker = "D" if arm == REFERENCE_ARM else "o"
-        ax.scatter(
-            [xi],
-            [mean],
-            s=64,
-            color=color,
-            marker=marker,
-            edgecolor=_SURFACE,
-            linewidth=1,
-            zorder=3,
-        )
+    colors = dict(zip(order, [*_CATEGORICAL[: len(ARMS)], _BASELINE_GRAY], strict=True))
+    stages = [SINGLE_STAGE, MULTI_STAGE] if result.multi_stage_available else [SINGLE_STAGE]
+
+    for xi, arm in enumerate(order):
+        for stage in stages:
+            rows = df[(df["arm"] == arm) & (df["stage"] == stage)]
+            if rows.empty:
+                continue
+            mean = float(rows["mrr"].iloc[0])
+            lo, hi = float(rows["ci_low"].iloc[0]), float(rows["ci_high"].iloc[0])
+            x = xi + (_STAGE_DODGE[stage] if result.multi_stage_available else 0.0)
+            color = colors[arm]
+            ax.errorbar(
+                x,
+                mean,
+                yerr=[[mean - lo], [hi - mean]],
+                fmt="none",
+                ecolor=color,
+                elinewidth=1.6,
+                capsize=4,
+                capthick=1.6,
+                zorder=2,
+            )
+            ax.scatter(
+                [x],
+                [mean],
+                s=64,
+                color=color,
+                marker=_STAGE_MARKERS[stage],
+                edgecolor=_SURFACE,
+                linewidth=1,
+                zorder=3,
+            )
 
     ax.set_xticks(range(len(order)))
     ax.set_xticklabels([_ARM_LABELS[a] for a in order], rotation=15, ha="right", fontsize=8)
     ax.set_xlim(-0.5, len(order) - 0.5)
     ax.set_ylim(0.0, _Y_TOP)
     ax.set_ylabel(f"Mean Reciprocal Rank@{MRR_K}", fontsize=9)
-    _finish(
-        ax,
-        title=f"Mean Reciprocal Rank@{MRR_K} by embedding-ablation arm (95% bootstrap CI)",
-        letter="B",
-    )
+
+    color_handles = [
+        Line2D([0], [0], marker="o", linestyle="none", markersize=7, color=colors[a]) for a in order
+    ]
+    color_labels = [_ARM_LABELS[a] for a in order]
+    if result.multi_stage_available:
+        shape_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker=_STAGE_MARKERS[s],
+                linestyle="none",
+                markersize=7,
+                color=_INK_SECONDARY,
+            )
+            for s in (SINGLE_STAGE, MULTI_STAGE)
+        ]
+        shape_labels = [_STAGE_LABELS[s] for s in (SINGLE_STAGE, MULTI_STAGE)]
+        _set_legend(ax, color_handles + shape_handles, color_labels + shape_labels)
+        title = (
+            f"Mean Reciprocal Rank@{MRR_K} by embedding-ablation arm, "
+            "single- vs. multi-stage (95% bootstrap CI)"
+        )
+    else:
+        _set_legend(ax, color_handles, color_labels)
+        title = (
+            f"Mean Reciprocal Rank@{MRR_K} by embedding-ablation arm (95% bootstrap CI; "
+            "multi-stage unavailable — vocabulary not attested)"
+        )
+    _finish(ax, title=title, letter="B")
 
 
 def generate_reports(result: AblationResult, out_dir: Path) -> list[Path]:
