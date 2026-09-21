@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     patient_record_vectors_enabled: bool = False
 
     # ── guideline corpus + ingestion (ARCH-038 / ARCH §5.1 / DEVIATIONS #26, #28) ──
-    sample_guidelines_dir: str = "data/sample_guidelines"
+    sample_guidelines_dir: str = "data/excerpt_guidelines"
     guidelines_allow_synthetic: bool = False  # opt-in CI-only synthetic fixture set
     ingest_min_parse_quality: float = 0.60  # below -> document badged + held for admin review
 

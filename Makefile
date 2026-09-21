@@ -36,8 +36,8 @@ ingest-deid: ## map an attested de-identified dataset onto record.py (ARCH-039);
 	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.ingest_deidentified_records \
 	  --dataset-dir /app/$(or $(DATASET),data/patient_records/deidentified/newborn_nbu_2021) --attest-deidentified
 
-prepare-guidelines: ## validate the operator-provided guideline corpus in data/sample_guidelines/ (ARCH-038)
-	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.prepare_sample_guidelines --dir /app/data/sample_guidelines
+prepare-guidelines: ## validate the operator-provided guideline corpus in data/excerpt_guidelines/ (ARCH-038)
+	$(COMPOSE) --profile $(PROFILE) exec api python -m scripts.prepare_sample_guidelines --dir /app/data/excerpt_guidelines
 
 fetch-guidelines: prepare-guidelines ## deprecated alias for prepare-guidelines
 

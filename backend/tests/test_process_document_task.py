@@ -5,6 +5,8 @@ embedded `:memory:` mode, and the offline stub embedder — a fake session
 
 from __future__ import annotations
 
+import json
+import shutil
 import uuid
 from pathlib import Path
 
@@ -85,6 +87,43 @@ def test_process_document_persists_chunks_and_updates_version(store: QdrantVecto
 
     qdrant_rows = store.get_by_ids([str(r.id) for r in rows])
     assert len(qdrant_rows) == len(rows)
+
+
+def test_process_document_remaps_pages_from_manifest_source_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: QdrantVectorStore
+) -> None:
+    """A `source_pages`-attested manifest entry (DEVIATIONS.md #166) remaps
+    every persisted chunk's page_start/page_end to the true source pages,
+    not the extract's own 1..N."""
+    fixture = FIXTURES / "SYNTH-GL-002_hospital_acquired_infection.md"
+    extract = tmp_path / fixture.name
+    shutil.copy(fixture, extract)
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"files": {fixture.name: {"source_pages": [42]}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("SAMPLE_GUIDELINES_DIR", str(tmp_path))
+    get_settings.cache_clear()
+
+    document = Document(title="SYNTH-GL-002 extract", publisher="Test", source_uri=str(extract))
+    document.id = uuid.uuid4()
+    version = DocumentVersion(
+        document_id=document.id,
+        version_label="2024.2",
+        content_sha256="deadbeef2",
+        status="active",
+        format_profile="grade_recommendations",
+    )
+    version.id = uuid.uuid4()
+    session = _FakeSession(
+        {(Document, document.id): document, (DocumentVersion, version.id): version}
+    )
+
+    rows = _run_process_document(session, str(version.id), vectorstore=store)
+
+    get_settings.cache_clear()
+    assert len(rows) > 0
+    assert all(r.page_start == 42 for r in rows)
+    assert all(r.page_end == 42 for r in rows)
 
 
 def test_process_document_raises_for_unknown_version() -> None:

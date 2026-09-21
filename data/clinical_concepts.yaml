@@ -188,6 +188,6 @@ concepts:
     field: examination_findings.difficulty_feeding
     operator: "present"
     source: "operator-curated"
-    synonyms: ["difficulty feeding", "not feeding well", "not able to feed at all", "unable to feed at all"]
+    synonyms: ["difficulty feeding", "not feeding well"]
     notes: "fires only when difficulty feeding was assessed and present"
 

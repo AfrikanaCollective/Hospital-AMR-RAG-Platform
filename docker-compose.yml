@@ -76,7 +76,17 @@ services:
       # A host bind mount also matches this directory's other documented use
       # (ARCH-038: "the same directory an operator manually drops PDFs
       # into") and makes uploads survive a container recreate.
-      - ./data/sample_guidelines:/app/data/sample_guidelines
+      - ./data/excerpt_guidelines:/app/data/excerpt_guidelines
+      # Read-only: archival full-publication originals a source_pages excerpt
+      # was pulled from (DEVIATIONS.md #167/#173). Never scanned by
+      # scripts/prepare_sample_guidelines.py (which only walks
+      # SAMPLE_GUIDELINES_DIR) and never a target for new ingestion -- this
+      # mount exists only so an already-ingested Document.source_uri that
+      # legitimately points here (a full document later superseded by an
+      # excerpt) remains resolvable if that document_version is ever
+      # reprocessed, not to make this directory part of the discoverable
+      # corpus.
+      - ./data/guideline_sources:/app/data/guideline_sources:ro
       - ./data/patient_records:/app/data/patient_records
       # Operator-editable clinical-concept vocabulary (SCOPE-2.6/ARCH-042,
       # PRD-057) -- same rationale as the two mounts above: this is an
@@ -118,7 +128,8 @@ services:
     volumes:
       - hf-model-cache:/home/appuser/.cache/huggingface
       # Shared with `api` — see the matching comment there (DEVIATIONS.md #95).
-      - ./data/sample_guidelines:/app/data/sample_guidelines
+      - ./data/excerpt_guidelines:/app/data/excerpt_guidelines
+      - ./data/guideline_sources:/app/data/guideline_sources:ro
       - ./data/patient_records:/app/data/patient_records
       - ./deploy/tls:/app/deploy/tls:ro
 

@@ -910,6 +910,31 @@ MRR@8 0.0417→0.125) — the mechanism works end to end, though the sample is
 far too small to draw a production conclusion from. Full account in
 `DEVIATIONS.md` #153/#154.
 
+**Phase 2 reopened (2026-09-21) — partial-page-extract guideline ingestion,
+citation page-number provenance.** Operator asked whether a guideline PDF
+with only a handful of pages relevant to one topic (out of a much larger
+publication) should be extracted as its own smaller file before ingestion.
+Answer worked through and implemented: extracting the pages is fine, but
+only if the true source page numbers are preserved — otherwise citations
+end up pointing at the extract's own page 1-4 instead of the real
+document's page 42-45. ARCH-038's ingest manifest gained an optional
+per-file `source_pages` field (the true page numbers, one per physical page
+in the extract, in order); `app.ingestion.page_provenance` remaps
+`ParsedDocument.page_starts` through it before chunking, so every
+`Chunk.page_start`/`page_end` reflects the real source pagination
+automatically (chunking already derives page numbers via
+`doc.page_for_offset` at emit time — no chunking-code change needed). Fails
+closed (rejects ingestion) if the manifest's page count doesn't match the
+file's actual page count, matching `app.ingestion.records`'s attestation-gate
+pattern. 11 new tests (`tests/test_page_provenance.py`,
+`tests/test_process_document_task.py`); full suite otherwise unaffected —
+19 pre-existing, unrelated failures were found and confirmed **not** caused
+by this change (a known `Path(__file__).resolve().parents[N]` container-vs-host
+layout mismatch, the same class of bug DEVIATIONS #150 already fixed once
+for `run_orchestration_ablation.py`, recurring across ~5 other test files
+never touched by this change, plus one unrelated `httpx` deprecation-warning
+issue). See `DEVIATIONS.md` #166.
+
 ### Repository layout
 
 ```
@@ -946,8 +971,10 @@ frontend/           Vite + React + TS: LoginPage, QueryPage, ReviewPage (rank
                     components/, api/client.ts, auth.ts
 deploy/             nginx.conf, postgres init SQL (schemas + append-only audit grants)
 data/               record_schema.json; clinical_concepts.yaml (SCOPE-2.6
-                    vocabulary template, TODO_CONFIRM); sample_guidelines/
-                    (+ manifest); patient_records/{synthetic,deidentified/<dataset>}/
+                    vocabulary template, TODO_CONFIRM); excerpt_guidelines/
+                    (+ manifest, source_pages-attested extracts); guideline_sources/
+                    (archival full originals, never ingested); patient_records/
+                    {synthetic,deidentified/<dataset>}/
 ```
 
 ---
@@ -1041,7 +1068,7 @@ make gen-data      # synthetic patient records — FALLBACK (RECORD_DOMAIN, defa
 #   put it under data/patient_records/deidentified/<name>/ with DATASET.md +
 #   field_mapping.yaml, fill the DATASET.md attestation, then:
 make ingest-deid DATASET=data/patient_records/deidentified/newborn_nbu_2021
-# --- guideline corpus: add real guideline PDFs to data/sample_guidelines/,
+# --- guideline corpus: add real guideline PDFs to data/excerpt_guidelines/,
 #     then copy manifest.example.json -> manifest.json and fill it (ARCH-038) ---
 make prepare-guidelines   # validate the guideline corpus + manifest
 ```
@@ -1149,9 +1176,9 @@ All config is via environment variables / `.env` (secrets via
     ARCH-039 / DEVIATIONS.md #33–#35, #38, #57. The bundled example is
     `newborn_nbu_2021` (a de-identified Kenya Newborn Unit dataset, EAV,
     ~40,871 patients).
-- `data/sample_guidelines/` — **the guideline corpus. You supply this.** Drop
+- `data/excerpt_guidelines/` — **the guideline corpus. You supply this.** Drop
   real clinical-guideline PDFs here, then copy
-  `data/sample_guidelines/manifest.example.json` to `manifest.json` and fill in
+  `data/excerpt_guidelines/manifest.example.json` to `manifest.json` and fill in
   each document's `title / publisher / version_label / effective_date /
   licence / format_profile / topic_tags` (ARCH-038 — metadata is never inferred
   from the PDF). `make prepare-guidelines` validates the corpus and warns about
@@ -1159,7 +1186,17 @@ All config is via environment variables / `.env` (secrets via
   and you pass `--allow-synthetic` (or `GUIDELINES_ALLOW_SYNTHETIC=true`) does
   the script emit a tiny synthetic 3-document set — as a **CI-only offline
   fixture** under `backend/tests/fixtures/guidelines/`, never into the corpus.
-  (DEVIATIONS.md #26.)
+  (DEVIATIONS.md #26.) A file that is only pages X-Y of a larger publication
+  gets an optional `source_pages: [X, ..., Y]` manifest entry (ARCH-038
+  extension, DEVIATIONS.md #166) so its citations carry the real source
+  document's page numbers, not the extract's own 1..N.
+- `data/guideline_sources/` — **archival full publications, never ingested.**
+  If you keep the complete original a `source_pages` extract was pulled from
+  (to verify the attestation later, or re-derive a different page range), it
+  goes here, not in `data/excerpt_guidelines/` — no ingestion code path scans
+  or reads this directory at all, so a full 100-page original placed here can
+  never be accidentally double-ingested alongside its 4-page excerpt. See
+  `data/guideline_sources/README.md` (DEVIATIONS.md #167).
 
 The Phase-1 reference corpus is three real neonatal guidelines (WHO
 recommendations on newborn health 2017; WHO recommendations for management of
@@ -1190,7 +1227,7 @@ Full model: [ARCHITECTURE.md](ARCHITECTURE.md) §17–§18.
 
 ## License / data use
 
-Development only. Guideline documents you add to `data/sample_guidelines/`
+Development only. Guideline documents you add to `data/excerpt_guidelines/`
 retain their original licences — record each in `manifest.json` and confirm it
 permits local development use before ingesting (PRD-A2 / ARCH-038). WHO
 publications are typically released under CC BY-NC-SA 3.0 IGO; verify per

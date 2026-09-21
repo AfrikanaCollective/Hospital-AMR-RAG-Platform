@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.ingestion.chunking import chunk_document
-from app.ingestion.pdf_parse import parse_markdown
+from app.ingestion.pdf_parse import parse_markdown, parse_pdf
+from tests.pdf_helpers import make_pdf
 
 FIXTURES = Path(__file__).parent / "fixtures" / "guidelines"
 
@@ -124,3 +127,37 @@ def test_prose_windowing_produces_multiple_overlapping_chunks() -> None:
     first_words = prose[0]["text"].split()
     second_words = prose[1]["text"].split()
     assert any(w in second_words[:30] for w in first_words[-15:])
+
+
+def test_figure_extraction_failure_is_best_effort_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing optional image-decode dependency (or one malformed embedded
+    image) must not abort chunking the rest of the document (DEVIATIONS.md
+    #174) -- ARCH §6 rule 3b's own "best-effort" framing, made real."""
+    pdf_path = make_pdf(
+        [
+            "1 Introduction",
+            "1.1 This guideline recommends recording vital signs on arrival. "
+            "(Strong recommendation, moderate certainty)",
+        ],
+        tmp_path / "sample.pdf",
+    )
+    doc = parse_pdf(str(pdf_path))
+
+    class _BoomPage:
+        def extract_text(self) -> str:
+            return ""
+
+        @property
+        def images(self) -> list:
+            raise ImportError("pillow is required to do image extraction")
+
+    monkeypatch.setattr(
+        "pypdf.PdfReader",
+        lambda _path: type("FakeReader", (), {"pages": [_BoomPage()]})(),
+    )
+
+    chunks = chunk_document(doc, format_profile="grade_recommendations")
+    assert not [c for c in chunks if c["chunk_type"] == "figure"]
+    assert any(c["chunk_type"] == "recommendation" for c in chunks)

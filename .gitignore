@@ -13,11 +13,16 @@ deploy/tls/*.crt
 !**/secrets/.gitkeep
 
 # --- guideline corpus (operator-supplied; large + licensed — never commit) ---
-data/sample_guidelines/*
-!data/sample_guidelines/.gitkeep
-!data/sample_guidelines/manifest.example.json
+data/excerpt_guidelines/*
+!data/excerpt_guidelines/.gitkeep
+!data/excerpt_guidelines/manifest.example.json
 # real manifest.json is operator-specific (may carry unpublished refs) — keep it local
-data/sample_guidelines/manifest.json
+data/excerpt_guidelines/manifest.json
+# --- full-publication archival copies for partial-page-extract provenance (DEVIATIONS #167) ---
+# never scanned or read by any ingestion code path — see data/guideline_sources/README.md
+data/guideline_sources/*
+!data/guideline_sources/.gitkeep
+!data/guideline_sources/README.md
 data/eval_snapshots/*
 !data/eval_snapshots/.gitkeep
 data/eav_cache/*

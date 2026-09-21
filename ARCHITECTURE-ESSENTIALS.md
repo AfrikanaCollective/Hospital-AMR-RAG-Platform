@@ -118,7 +118,7 @@ adapter / `field_mapping.yaml`; no source-specific field enters the schema.
 
 Document ingest metadata (title/publisher/version/effective_date/**licence**/
 `format_profile`/topic_tags) is **operator-supplied** via a per-file manifest
-(`data/sample_guidelines/manifest.json`), never inferred from PDF metadata
+(`data/excerpt_guidelines/manifest.json`), never inferred from PDF metadata
 (**ARCH-038**). Dev corpus = real PDFs in `SAMPLE_GUIDELINES_DIR`; the
 synthetic 3-doc set is a CI-only opt-in fallback (`GUIDELINES_ALLOW_SYNTHETIC`).
 
@@ -387,7 +387,7 @@ sub-threshold retrieval/citation metric.
 `EMBEDDING_BACKEND`, `CANDIDATE_K`/`FUSED_K`/`TOP_K` (40/24/8), `RRF_K` (60),
 `RETRIEVAL_MIN_SCORE`/`SUPPORT_SCORE_FLOOR`/`MIN_SUPPORTING_CHUNKS`,
 `GROUNDING_ENTAILMENT_MODE` (hybrid), `PATIENT_RECORD_VECTORS_ENABLED` (false),
-`SAMPLE_GUIDELINES_DIR` (data/sample_guidelines), `GUIDELINES_ALLOW_SYNTHETIC` (false),
+`SAMPLE_GUIDELINES_DIR` (data/excerpt_guidelines), `GUIDELINES_ALLOW_SYNTHETIC` (false),
 `INGEST_MIN_PARSE_QUALITY` (0.60), `PATIENT_RECORDS_DIR` (data/patient_records),
 `RECORD_DOMAIN` (neonatal), `DEIDENTIFIED_ATTESTATION_REQUIRED` (true),
 `LOCAL_ADAPTATION_ENABLED` (false, inert), `ESCALATION_SLA_MINUTES` (60),

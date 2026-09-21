@@ -38,11 +38,14 @@ Rules, in priority order (ARCH §6):
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.ingestion.pdf_parse import ParsedDocument
+
+logger = logging.getLogger(__name__)
 
 RECOMMENDATION_SOFT_CAP_TOKENS = 1024
 PROSE_TARGET_MIN_TOKENS = 350
@@ -404,7 +407,21 @@ def _extract_pdf_figures(doc: ParsedDocument, existing: list[_Chunk]) -> list[_C
     for page_idx, page in enumerate(reader.pages, start=1):
         page_text = page.extract_text() or ""
         caption_match = _FIGURE_CAPTION_RE.search(page_text)
-        images = list(getattr(page, "images", []))
+        try:
+            images = list(getattr(page, "images", []))
+        except Exception:
+            # Best-effort per the module's own framing (ARCH §6 rule 3b) --
+            # a missing optional image-decode dependency or one malformed
+            # embedded image must not abort chunking the rest of the
+            # document (DEVIATIONS.md #174, found via a real PDF whose
+            # image decoding raised ImportError: pillow is required).
+            logger.warning(
+                "figure extraction failed on page %d of %s, skipping this page's figures",
+                page_idx,
+                path,
+                exc_info=True,
+            )
+            continue
         for image in images:
             has_caption = caption_match is not None
             caption = caption_match.group(0) if caption_match else "(figure, no caption detected)"

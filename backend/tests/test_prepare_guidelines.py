@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def test_manifest_example_is_valid_and_covers_required_fields() -> None:
-    data = json.loads((REPO / "data/sample_guidelines/manifest.example.json").read_text())
+    data = json.loads((REPO / "data/excerpt_guidelines/manifest.example.json").read_text())
     assert "files" in data and data["files"]
     for name, entry in data["files"].items():
         assert name.lower().endswith((".pdf", ".md"))

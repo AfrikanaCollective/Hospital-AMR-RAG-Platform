@@ -39,7 +39,7 @@ class DocumentVersion(UUIDPk, Base):
     __table_args__ = {"schema": SCHEMA}
 
     document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey(f"{SCHEMA}.document.id"))
-    version_label: Mapped[str] = mapped_column(String(64))
+    version_label: Mapped[str] = mapped_column(String(256))
     effective_date: Mapped[date | None] = mapped_column()
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     supersedes_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -1,7 +1,7 @@
 """Prepare the development guideline corpus (PRD-006, PRD-001, PRD-A2; ARCH-038).
 
 Default behaviour — **use the real guideline documents the operator has placed
-in `SAMPLE_GUIDELINES_DIR`** (default `data/sample_guidelines/`). This script
+in `SAMPLE_GUIDELINES_DIR`** (default `data/excerpt_guidelines/`). This script
 does NOT generate guideline content by default. It:
 
   1. scans the directory for guideline files (`*.pdf`, `*.md`), ignoring the
@@ -178,7 +178,7 @@ def write_synthetic_fixtures() -> int:
         f"Generated {datetime.now(UTC).isoformat()} by "
         "`scripts/prepare_sample_guidelines.py --allow-synthetic`.\n\n"
         "These are **NOT real clinical guidance** and are **NOT** the dev corpus. "
-        "The real corpus is operator-provided PDFs in `data/sample_guidelines/` "
+        "The real corpus is operator-provided PDFs in `data/excerpt_guidelines/` "
         "(see DEVIATIONS.md #26). Use these only for deterministic offline tests.\n",
         encoding="utf-8",
     )
@@ -188,7 +188,7 @@ def write_synthetic_fixtures() -> int:
     )
     print(
         "[prepare-guidelines] these are NOT the dev corpus — add real guideline "
-        "PDFs to data/sample_guidelines/ for real work."
+        "PDFs to data/excerpt_guidelines/ for real work."
     )
     return 0
 
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--dir",
         type=Path,
-        default=Path(os.environ.get("SAMPLE_GUIDELINES_DIR", "data/sample_guidelines")),
+        default=Path(os.environ.get("SAMPLE_GUIDELINES_DIR", "data/excerpt_guidelines")),
     )
     p.add_argument(
         "--strict",

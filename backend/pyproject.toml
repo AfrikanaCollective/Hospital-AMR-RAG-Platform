@@ -32,6 +32,10 @@ dependencies = [
     "qdrant-client>=1.12",
     "rank-bm25>=0.2.2",
     "pypdf>=5.1",
+    "pillow>=11.0",  # pypdf's own image-extraction path needs this for real
+    # figures (ARCH §6 rule 3b, app.ingestion.chunking._extract_pdf_figures) --
+    # without it pypdf raises ImportError on any PDF with embedded images,
+    # not just skips figure extraction (DEVIATIONS.md #174).
     "pyyaml>=6.0",
     "python-multipart>=0.0.12",
     "pyjwt>=2.9",  # dev-JWT auth provider (ARCH-011)
