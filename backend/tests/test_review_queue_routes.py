@@ -192,6 +192,84 @@ def test_get_queue_item_includes_generated_question_and_segments(client: TestCli
     assert body["segments"] == segments
 
 
+def test_get_queue_item_exposes_multi_stage_audit_fields_read_only(client: TestClient) -> None:
+    """DEVIATIONS.md #186: the multi-stage (vocabulary-augmented) audit
+    counterpart is exposed for traceability/comparison, decrypted the same
+    way as the single-stage answer -- but only ever as a nested, clearly
+    separate `multi_stage` key, never merged into the fields a rater's
+    score is actually based on."""
+    from app.crypto.provider import get_crypto
+    from app.db.models.eval import result_multi_stage_answer_aad
+
+    result_id = uuid.uuid4()
+    crypto = get_crypto()
+    result = Result(
+        id=result_id,
+        provenance="auto_generated",
+        queue_state="open",
+        citations=[{"citation_id": "c1"}],
+        grounding_report={"action": "release"},
+        multi_stage_query="augmented question text; fake fast breathing",
+        multi_stage_fired=True,
+        multi_stage_answer_enc=crypto.encrypt(
+            b"Multi-stage answer text.", aad=result_multi_stage_answer_aad(result_id)
+        ),
+        multi_stage_citations=[{"citation_id": "c2"}],
+        multi_stage_grounding_report={"action": "release"},
+        created_at=datetime.now(UTC),
+    )
+    session = _FakeSession([result], [])
+    fastapi_app.dependency_overrides[get_db] = lambda: session
+
+    resp = client.get(f"/api/review-queue/{result.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["multi_stage"] == {
+        "query": "augmented question text; fake fast breathing",
+        "fired": True,
+        "answer": "Multi-stage answer text.",
+        "citations": [{"citation_id": "c2"}],
+        "grounding_report": {"action": "release"},
+    }
+    # The single-stage fields a rater's score is based on are untouched.
+    assert body["citations"] == [{"citation_id": "c1"}]
+
+
+def test_get_queue_item_multi_stage_absent_when_not_computed(client: TestClient) -> None:
+    """No vocabulary attested for the run that created this result -- the
+    multi_stage sub-object's fields fall back to their plain defaults, not
+    an error or a missing key. `multi_stage_fired`/`citations`/
+    `grounding_report` are passed explicitly here (rather than left off) to
+    match what a REAL fetched row looks like once the ORM/migration column
+    defaults have actually resolved (`False`/`[]`/`{}`) -- constructing a
+    `Result` directly in Python, as this fake session does, otherwise leaves
+    those `None` since a plain `default=` only applies at insert time, an
+    artifact of this test's own construction, not real row shape."""
+    result = Result(
+        id=uuid.uuid4(),
+        provenance="auto_generated",
+        queue_state="open",
+        citations=[{"citation_id": "c1"}],
+        multi_stage_fired=False,
+        multi_stage_citations=[],
+        multi_stage_grounding_report={},
+        created_at=datetime.now(UTC),
+    )
+    session = _FakeSession([result], [])
+    fastapi_app.dependency_overrides[get_db] = lambda: session
+
+    resp = client.get(f"/api/review-queue/{result.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["multi_stage"] == {
+        "query": None,
+        "fired": False,
+        "answer": None,
+        "citations": [],
+        "grounding_report": {},
+    }
+
+
 def test_get_queue_item_not_queued_is_404(client: TestClient) -> None:
     result = Result(
         id=uuid.uuid4(),

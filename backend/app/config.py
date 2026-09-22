@@ -189,7 +189,20 @@ class Settings(BaseSettings):
 
     # ── auto question generation (ARCH-022 / PRD-065) ──
     qgen_composition: str = "60,20,20"  # well_supported,missing_info_expected,no_guideline_expected
-    qgen_dedup_threshold: float = 0.92
+    # Jaccard threshold over each candidate record's (examination findings ∪
+    # problems) set for the diversity filter (DEVIATIONS.md #188) — a
+    # candidate is rejected only when this AND every shared vitals field is
+    # within its tolerance band (app.eval.question_gen.diversity). Was a
+    # whole-narrative-text cosine-similarity threshold through two prior
+    # attempts (0.92 default, raised to 0.96 in DEVIATIONS #119 after the
+    # same saturation symptom this entry's own scale/meaning change fixes
+    # more durably) — an embedding-based check saturates as the accepted
+    # pool grows, no matter the threshold, because "similarity to ANY of N
+    # growing embeddings" only gets more likely to false-positive as N
+    # grows; this field's new default (0.8) is calibrated for the Jaccard
+    # scale, not the old cosine one, and is not comparable to the pre-#188
+    # value if you have QGEN_DEDUP_THRESHOLD set from before.
+    qgen_dedup_threshold: float = 0.8
     qgen_max_retries: int = 3
     # Auto-seed the rubric review queue from de-identified records at
     # startup (ARCH §14.2/§15; DEVIATIONS.md #113, #114) — enqueued from the

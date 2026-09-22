@@ -35,7 +35,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import Principal, get_db, principal_uuid, require_role
 from app.crypto.provider import get_crypto
-from app.db.models.eval import EvalQuestion, Result, result_answer_aad, result_segments_aad
+from app.db.models.eval import (
+    EvalQuestion,
+    Result,
+    result_answer_aad,
+    result_multi_stage_answer_aad,
+    result_segments_aad,
+)
 from app.rubric.workflow import list_queue_candidates, select_queue_items
 
 router = APIRouter()
@@ -106,6 +112,20 @@ async def get_queue_item(
         eval_question = session.get(EvalQuestion, result.eval_question_id)
         question = eval_question.text if eval_question is not None else None
 
+    # Multi-stage (Phase 7 vocabulary-augmented, PRD-111 Arm C) audit-only
+    # counterpart (DEVIATIONS.md #186) — read-only, for traceability/
+    # comparison. NEVER fed into rating: `app.rubric.workflow` only ever
+    # reads/writes `rating_round`/`rubric_rating` rows keyed by `result_id`,
+    # never touches these fields, so exposing them here cannot influence
+    # what a reviewer is scored on. `None` when this run had no attested
+    # vocabulary; identical to the single-stage query (with no answer) when
+    # the augmentation didn't fire for this record.
+    multi_stage_answer = None
+    if result.multi_stage_answer_enc is not None:
+        multi_stage_answer = crypto.decrypt(
+            result.multi_stage_answer_enc, aad=result_multi_stage_answer_aad(result.id)
+        ).decode("utf-8")
+
     # No other raters' scores exposed here — independence of the rank-mode
     # rating (ARCH §14.2): a reviewer's own score must not be anchored on a
     # prior rater's judgement.
@@ -118,4 +138,11 @@ async def get_queue_item(
         "segments": segments,
         "citations": result.citations,
         "grounding_report": result.grounding_report,
+        "multi_stage": {
+            "query": result.multi_stage_query,
+            "fired": result.multi_stage_fired,
+            "answer": multi_stage_answer,
+            "citations": result.multi_stage_citations,
+            "grounding_report": result.multi_stage_grounding_report,
+        },
     }

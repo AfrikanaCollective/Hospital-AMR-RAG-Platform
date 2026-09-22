@@ -935,6 +935,36 @@ for `run_orchestration_ablation.py`, recurring across ~5 other test files
 never touched by this change, plus one unrelated `httpx` deprecation-warning
 issue). See `DEVIATIONS.md` #166.
 
+**Review queue repopulated to 100 items, each with a multi-stage audit
+counterpart; diversity filter replaced entirely (2026-09-21/22).** Operator
+asked to create 100 fresh review-queue items where each item's generated
+query has both a single-step and a multi-step (Phase 7 vocabulary-augmented)
+version recorded, for audit purposes. `eval.result` gained
+`multi_stage_query`/`multi_stage_fired`/`multi_stage_answer_enc`/
+`multi_stage_citations`/`multi_stage_retrieval_snapshot`/
+`multi_stage_grounding_report` — a read-only, never-rated counterpart to the
+single-stage fields, exposed via `GET /review-queue/{id}`'s new nested
+`multi_stage` key; a genuine second real-pipeline call is only made when the
+augmentation actually changes the query (DEVIATIONS #186). Generating the
+first batch surfaced a real, previously-undetected bug: the diversity/
+near-duplicate filter's whole-narrative-text embedding was dominated by the
+shared demographic sentence template, live-verified false-positive-rejecting
+two records with materially different findings (SpO2 93% vs 70%) at 0.9544
+cosine similarity. A first fix (embed only the clinical-findings text) was
+tried, live-verified insufficient (aggregate false-positive rate got worse,
+0/41 successes at scale), and replaced entirely with a structured
+comparison — Jaccard similarity on each record's own examination-findings/
+problems set, plus a numeric vitals-tolerance check, no embedding or model
+call of any kind (`QGEN_DEDUP_THRESHOLD` repurposed to this new 0-1 Jaccard
+scale, default 0.8 — not comparable to its old cosine-similarity value if
+you have this set from before). That fix alone still saturated once the
+200-record de-identified pool's genuine clinical diversity ran low; the
+`newborn_nbu_2021` dataset was scaled from 200 to 5,000 ingested patients
+(same already-attested source file, which documents ~40,871 patients total —
+`--limit 5000`, no code change) to clear it. Reached exactly 100 open queue
+items (99 `well_supported`, 1 `missing_info_expected`) as a result. Full
+account in `DEVIATIONS.md` #186–#189.
+
 ### Repository layout
 
 ```

@@ -92,7 +92,9 @@ services:
       # PRD-057) -- same rationale as the two mounts above: this is an
       # operator-attested artifact (DEVIATIONS.md #143/#146/#149) that must
       # be editable on the host without a rebuild, read by
-      # `scripts/run_orchestration_ablation.py` inside this container.
+      # `scripts/run_orchestration_ablation.py` inside this container. Also
+      # mounted into `worker` (DEVIATIONS.md #186) -- see the matching
+      # comment there for why that mount was missing until now.
       - ./data/clinical_concepts.yaml:/app/data/clinical_concepts.yaml:ro
       # Read-only: an optional extra CA cert for LLM_GATEWAY_CA_BUNDLE /
       # EMBEDDING_GATEWAY_CA_BUNDLE, e.g. a self-signed cert on an operator's
@@ -131,6 +133,14 @@ services:
       - ./data/excerpt_guidelines:/app/data/excerpt_guidelines
       - ./data/guideline_sources:/app/data/guideline_sources:ro
       - ./data/patient_records:/app/data/patient_records
+      # Operator-editable clinical-concept vocabulary (SCOPE-2.6/ARCH-042,
+      # PRD-057) — was `api`-only until DEVIATIONS.md #186 found the gap:
+      # `app.eval.auto_seed`'s multi-stage audit fields need to read
+      # `data/clinical_concepts.yaml` from the real Celery task
+      # (`eval.auto_seed_review_queue`), which runs in THIS container, not
+      # `api` — the mount just never existed here because nothing running in
+      # `worker` had ever needed it before.
+      - ./data/clinical_concepts.yaml:/app/data/clinical_concepts.yaml:ro
       - ./deploy/tls:/app/deploy/tls:ro
 
   redis:

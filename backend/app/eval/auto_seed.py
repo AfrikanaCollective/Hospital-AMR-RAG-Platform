@@ -6,10 +6,13 @@ Wires together, end to end:
    de-identified patient records (never synthetic ones — this pipeline is
    specifically "from the existing de-identified anonymised patient-level
    records").
-2. `app.eval.question_gen` (planner + generator, unchanged) — a 60/20/20
-   `expected_outcome`-stratified plan of unique, scope-1-framed narrative
-   questions, now with the diversity filter (ARCH §15.1 step 7,
-   `app.eval.question_gen.diversity`) actually enforced.
+2. `app.eval.question_gen` — a 60/20/20 `expected_outcome`-stratified plan
+   of unique narrative questions, with the diversity filter (ARCH §15.1
+   step 7, `app.eval.question_gen.diversity`) enforced. Narrative
+   construction is deterministic (`app.eval.question_gen.deterministic
+   .build_deterministic_narrative`, DEVIATIONS.md #190 — was the LLM-based
+   `generate.py::generate_question`), built only from the record's own
+   field values, no fabrication risk, no validator/retry step.
 3. The real query pipeline (`app.agents.graph_runtime.invoke_graph`, the
    SAME code path `/query` uses) for each generated question.
 4. Persist an `eval.Result` row with `queue_state='open'` **immediately** —
@@ -38,12 +41,13 @@ this run too (`used_this_run`). A given de-identified record can never
 source more than one queued scenario.
 
 **Diversity across runs, not just within one (DEVIATIONS.md #114):** the
-near-duplicate filter's `accepted_embeddings` seed is the embedding of every
-already-accepted auto-generated question (persisted at creation time in
-`EvalQuestion.generator_meta["embedding"]`, `_existing_accepted_embeddings`)
-— not an empty list — so a later top-up run (e.g. raising
-`QGEN_AUTO_SEED_COUNT`) cannot re-accept a narrative near-duplicate of one
-already queued in an earlier run.
+near-duplicate filter's `accepted_records` seed is every already-accepted
+auto-generated question's own SOURCE RECORD (re-resolved by
+`_existing_accepted_records`, DEVIATIONS.md #188 — not an embedding; see
+`app.eval.question_gen.diversity`'s module docstring for why an
+embedding-based check was tried twice and replaced) — not an empty list —
+so a later top-up run (e.g. raising `QGEN_AUTO_SEED_COUNT`) cannot re-accept
+a clinically near-duplicate record of one already queued in an earlier run.
 
 **Commits per scenario, not once for the whole run (DEVIATIONS.md #115):**
 each `_generate_one_scenario` call commits immediately on success, rather
@@ -114,13 +118,13 @@ from app.eval.deidentified_source import load_deidentified_records
 # would be a real circular import (confirmed live: `ImportError: cannot
 # import name '_RECORD_ID_NAMESPACE' from partially initialized module
 # 'app.eval.tasks'`), not a hypothetical one. `load_attested_vocabulary`/
-# `build_arm_c_query` are imported lazily inside the functions that use them
-# instead -- same rationale/pattern as this module's own existing lazy
-# `app.agents.graph_runtime` import in `_invoke_pipeline` below.
-from app.eval.question_gen.diversity import is_near_duplicate
-from app.eval.question_gen.generate import QuestionGenerationFailed, generate_question
+# `build_arm_c_query`/`load_synthetic_record_index` are imported lazily
+# inside the functions that use them instead -- same rationale/pattern as
+# this module's own existing lazy `app.agents.graph_runtime` import in
+# `_invoke_pipeline` below.
+from app.eval.question_gen.deterministic import build_deterministic_narrative
+from app.eval.question_gen.diversity import is_clinically_near_duplicate
 from app.eval.question_gen.planner import Composition, allocate
-from app.ingestion.embed import embed_texts
 from app.llm.gateway import LLMGatewayError
 from app.logging import get_logger
 from app.records.concepts import ConceptVocabulary
@@ -132,15 +136,30 @@ from app.schemas.record import PatientRecord
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from app.eval.orchestration_ablation.augment import AugmentedQuery
+
 logger = get_logger(__name__)
 
 _LOAD_RECORDS_FN = load_deidentified_records
-_EMBED_FN = embed_texts
 
 # Default operator-attested vocabulary path for the multi-stage audit fields
 # (DEVIATIONS.md #186) — same default/env-override convention as
 # `scripts/run_orchestration_ablation.py`/`scripts/run_model_ablation.py`.
 _DEFAULT_CONCEPTS_PATH = "data/clinical_concepts.yaml"
+
+# Operator-supplied topic (DEVIATIONS.md #191, correcting #190's own generic
+# placeholder "this newborn's presentation"): `build_deterministic_narrative`
+# requires an explicit `topic` per its own docstring — real automatic
+# topic-matching (ARCH §15.1 step 2, "pick a source record matched to a
+# guideline's applicability") remains deferred (DEVIATIONS #67), and
+# DEVIATIONS #156's own design note is explicit that topic supply is the
+# operator's call, not something this module derives. Matches the scope
+# `data/excerpt_guidelines/` is actually curated for (antibiotic use,
+# neonatal infection management). The actual guideline MATCH still comes
+# from the full narrative's real clinical content (findings/vitals/
+# problems), not this topic clause — it only frames the question's opening
+# line.
+_TOPIC = "antibiotics or infection in hospital settings for this newborn's presentation"
 
 
 def _load_attested_vocabulary(path: str) -> tuple[ConceptVocabulary | None, str | None]:
@@ -148,7 +167,7 @@ def _load_attested_vocabulary(path: str) -> tuple[ConceptVocabulary | None, str 
     # app.eval.tasks a module-level import here would hit. Wrapped in its
     # own module-level function (rather than importing lazily inline at each
     # call site) so it's a monkeypatchable seam, same pattern as
-    # `_LOAD_RECORDS_FN`/`_EMBED_FN`/`_INVOKE_PIPELINE_FN` below -- tests
+    # `_LOAD_RECORDS_FN`/`_INVOKE_PIPELINE_FN` below -- tests
     # default this to "no vocabulary" (DEVIATIONS.md #186) so they stay
     # deterministic regardless of whether `data/clinical_concepts.yaml`
     # happens to exist and be attested in the environment running them.
@@ -160,7 +179,9 @@ def _load_attested_vocabulary(path: str) -> tuple[ConceptVocabulary | None, str 
 _LOAD_ATTESTED_VOCABULARY_FN = _load_attested_vocabulary
 
 
-def _build_arm_c_query(question_text: str, vocabulary: ConceptVocabulary, record: PatientRecord):
+def _build_arm_c_query(
+    question_text: str, vocabulary: ConceptVocabulary, record: PatientRecord
+) -> AugmentedQuery:
     # Lazy import -- same circular-import reason as `_load_attested_vocabulary`
     # above; wrapped the same way so it's an independently monkeypatchable
     # seam for tests that want to control fired/not-fired without a fully
@@ -209,62 +230,67 @@ def _used_patient_ids(session: Session) -> set[uuid.UUID]:
 _USED_PATIENT_IDS_FN = _used_patient_ids
 
 
-def _existing_accepted_embeddings(session: Session) -> list[list[float]]:
-    """Embeddings of every already-accepted auto-generated question's
-    narrative, read back from `EvalQuestion.generator_meta["embedding"]`
-    (DEVIATIONS.md #114) — seeds the diversity filter so a later top-up run
-    cannot re-accept a near-duplicate of one already queued. A row from
-    before this change has no `"embedding"` key and is skipped, not treated
-    as an error — it simply isn't checked against (no narrative text is
-    re-embedded retroactively; the practical exposure is limited to
-    installations that ran the auto-seed pipeline before this fix, which per
-    DEVIATIONS.md #113 was `QGEN_AUTO_SEED_COUNT=30`, a small, one-time,
-    disclosed gap, not one this change silently re-introduces going
-    forward).
+def _existing_accepted_records(session: Session) -> list[dict]:
+    """Source record dict of every already-accepted auto-generated
+    question, re-resolved from its `source_record_id` (DEVIATIONS.md #188)
+    — seeds the diversity filter so a later top-up run cannot re-accept a
+    clinically near-duplicate record of one already queued. Replaces the
+    prior embedding-based version (`_existing_accepted_embeddings`,
+    DEVIATIONS #114/#119): see `app.eval.question_gen.diversity`'s module
+    docstring for why two embedding-based attempts were tried and both
+    failed live.
 
-    Also skips a row whose `"embedding_model_id"` doesn't match the
-    currently configured `EMBEDDING_MODEL_ID` (DEVIATIONS.md #119) — a stale
-    embedding from a since-replaced model is not directly comparable by
-    cosine similarity to one from the current model, and including it
-    produced unreliable near-duplicate results (found live when this
-    deployment switched `EMBEDDING_BACKEND` gateway -> local mid-generation).
-    A row from before #119 has no `"embedding_model_id"` key either and is
-    skipped the same way — same disclosed, non-silent gap as the paragraph
-    above, not a new one."""
-    stmt = select(EvalQuestion.generator_meta).where(
-        EvalQuestion.provenance == Provenance.AUTO_GENERATED.value
+    Resolves each `source_record_id` two ways, matching how it could have
+    been sourced: de-identified (`app.eval.auto_seed`'s own only writer, the
+    vast majority) via `load_deidentified_records`, or synthetic (the
+    deterministic-question-generator path, DEVIATIONS #156-158) via
+    `load_synthetic_record_index`. A row resolving via neither (shouldn't
+    happen — every `auto_generated` row with a `source_record_id` came from
+    one of these two paths) is simply skipped, not treated as an error —
+    same "disclosed, non-silent gap" precedent as the embedding version's
+    own skip conditions had."""
+    # Lazy import -- see this module's docstring on the circular import
+    # through app.eval.tasks a module-level import here would hit.
+    from app.eval.orchestration_ablation.augment import load_synthetic_record_index  # noqa: PLC0415
+
+    stmt = select(EvalQuestion.source_record_id).where(
+        EvalQuestion.provenance == Provenance.AUTO_GENERATED.value,
+        EvalQuestion.source_record_id.is_not(None),
     )
-    current_model_id = get_settings().embedding_model_id
-    out: list[list[float]] = []
-    for raw_meta in session.execute(stmt).scalars().all():
-        meta = raw_meta or {}
-        embedding = meta.get("embedding")
-        if embedding and meta.get("embedding_model_id") == current_model_id:
-            out.append(embedding)
-    return out
+    source_record_ids = {sid for sid in session.execute(stmt).scalars().all() if sid is not None}
+    if not source_record_ids:
+        return []
+
+    deidentified = dict(_LOAD_RECORDS_FN(session, dataset_id=None))
+    synthetic = load_synthetic_record_index()
+    return [
+        record
+        for sid in source_record_ids
+        if (record := deidentified.get(sid) or synthetic.get(sid)) is not None
+    ]
 
 
-_EXISTING_EMBEDDINGS_FN = _existing_accepted_embeddings
+_EXISTING_RECORDS_FN = _existing_accepted_records
 
 
 class _GenerationState:
     """Mutable state threaded through one `run_auto_seed_review_queue` call
     (DEVIATIONS.md #114): the shuffled candidate pool + cursor, the
     within-run record-reuse guard, and the diversity filter's accepted
-    embeddings — seeded from every prior run's output, not just this one."""
+    records — seeded from every prior run's output, not just this one."""
 
     def __init__(
         self,
         records: list[tuple[uuid.UUID, dict]],
         *,
         seed: int | None,
-        existing_embeddings: list[list[float]],
+        existing_records: list[dict],
     ) -> None:
         self.shuffled = records[:]
         random.Random(seed).shuffle(self.shuffled)
         self.cursor = 0
         self.used_this_run: set[uuid.UUID] = set()
-        self.accepted_embeddings: list[list[float]] = list(existing_embeddings)
+        self.accepted_records: list[dict] = list(existing_records)
 
     def next_candidate(self) -> tuple[uuid.UUID, dict] | None:
         """Advances the cursor and returns the next record to try, or `None`
@@ -284,64 +310,67 @@ def _generate_one_scenario(
     expected_outcome: ExpectedOutcome,
     *,
     dedup_threshold: float,
-    gateway: object | None,
     vocabulary: ConceptVocabulary | None,
 ) -> uuid.UUID | None:
-    """One attempt: pick a candidate record, generate + validate a
-    narrative, reject a near-duplicate, run the real pipeline, persist
-    `EvalQuestion` + `Result`, and commit (DEVIATIONS.md #115) — returns the
-    new `Result.id`, or `None` for any rejection (already used this run,
-    generation failed, near-duplicate, or a transient gateway error —
-    DEVIATIONS.md #116) — the caller retries with the next candidate, not
-    this function.
+    """One attempt: pick a candidate record, build the narrative
+    deterministically (DEVIATIONS.md #190), reject a near-duplicate, run the
+    real pipeline, persist `EvalQuestion` + `Result`, and commit
+    (DEVIATIONS.md #115) — returns the new `Result.id`, or `None` for any
+    rejection (already used this run, near-duplicate, or a transient
+    gateway error on the real pipeline call — DEVIATIONS.md #116) — the
+    caller retries with the next candidate, not this function.
 
-    Every network call (narrative generation, embedding, the real graph
-    invocation) happens *before* anything is added to `session` — found
-    live (DEVIATIONS.md #116): a transient gateway failure (a timeout, a
-    503) during the graph invocation, uncaught, crashed the whole Celery
-    task outright, and since nothing auto-retries or reschedules it, a
-    single blip silently stalled generation until the next container
-    restart — observed stalled for ~12 hours in exactly this way. Ordering
-    the real pipeline call before any DB write also means a transient
-    failure never leaves a half-written `EvalQuestion` with no matching
-    `Result` sitting pending in the session for a later commit to pick up
-    by accident."""
+    The real graph invocation happens *before* anything is added to
+    `session` — found live (DEVIATIONS.md #116): a transient gateway
+    failure (a timeout, a 503) during the graph invocation, uncaught,
+    crashed the whole Celery task outright, and since nothing auto-retries
+    or reschedules it, a single blip silently stalled generation until the
+    next container restart — observed stalled for ~12 hours in exactly this
+    way. Ordering the real pipeline call before any DB write also means a
+    transient failure never leaves a half-written `EvalQuestion` with no
+    matching `Result` sitting pending in the session for a later commit to
+    pick up by accident."""
     candidate = state.next_candidate()
     if candidate is None:
         return None
     patient_id, record = candidate
-    try:
-        generated = generate_question(
-            record,
-            expected_outcome,
-            gateway=gateway,  # type: ignore[arg-type]
-        )
-    except QuestionGenerationFailed:
+    # DEVIATIONS.md #190: deterministic, LLM-free narrative construction
+    # (`app.eval.question_gen.deterministic`, DEVIATIONS #156) — was
+    # `generate_question` (an LLM call + no-fabrication validator + retry
+    # loop). Built entirely from `record`'s own field values, so there is
+    # nothing to fabricate and nothing that can fail generation for this
+    # record (no `QuestionGenerationFailed`/transient-gateway case here
+    # anymore — one real network call fewer per attempt than before).
+    text = build_deterministic_narrative(record, topic=_TOPIC)
+    # Matches `generate.py`'s own convention (never a topic ref for
+    # no_guideline_expected -- there is no real guideline to reference by
+    # definition for that slot).
+    target_guideline_ref = (
+        {"topic": _TOPIC} if expected_outcome != ExpectedOutcome.NO_GUIDELINE_EXPECTED else None
+    )
+
+    # DEVIATIONS.md #188: compares the record's own structured clinical
+    # fields directly (Jaccard on findings/problems + vitals tolerance) —
+    # not an embedding of any kind. See `app.eval.question_gen.diversity`'s
+    # module docstring for why two embedding-based attempts (#187) were
+    # tried and both failed live.
+    if is_clinically_near_duplicate(
+        record, state.accepted_records, findings_jaccard_threshold=dedup_threshold
+    ):
         return None
+
+    try:
+        out = _INVOKE_PIPELINE_FN(text)
     except (httpx.HTTPError, LLMGatewayError) as exc:
         logger.warning(
-            "auto_seed_review_queue: transient gateway error generating a narrative for "
+            "auto_seed_review_queue: transient gateway error running the pipeline for "
             "record %r, skipping this attempt: %s",
             patient_id,
             exc,
         )
         return None
 
-    try:
-        [embedding] = _EMBED_FN([generated["text"]], is_query=False)
-        if is_near_duplicate(embedding, state.accepted_embeddings, threshold=dedup_threshold):
-            return None
-        out = _INVOKE_PIPELINE_FN(generated["text"])
-    except (httpx.HTTPError, LLMGatewayError) as exc:
-        logger.warning(
-            "auto_seed_review_queue: transient gateway error embedding/running the pipeline "
-            "for record %r, skipping this attempt: %s",
-            patient_id,
-            exc,
-        )
-        return None
-
-    state.accepted_embeddings.append(embedding)
+    state.accepted_records.append(record)
     state.used_this_run.add(patient_id)
 
     # Multi-stage audit fields (DEVIATIONS.md #186) — Phase 7's
@@ -359,9 +388,7 @@ def _generate_one_scenario(
     multi_stage_fired = False
     multi_stage_out: dict | None = None
     if vocabulary is not None:
-        augmented = _BUILD_ARM_C_QUERY_FN(
-            generated["text"], vocabulary, PatientRecord.model_validate(record)
-        )
+        augmented = _BUILD_ARM_C_QUERY_FN(text, vocabulary, PatientRecord.model_validate(record))
         multi_stage_query = augmented.text
         multi_stage_fired = augmented.fired
         if augmented.fired:
@@ -385,22 +412,13 @@ def _generate_one_scenario(
                     exc,
                 )
 
-    generator_meta = dict(generated.get("generator_meta") or {})
-    generator_meta["embedding"] = embedding
-    # Which model produced `embedding` above — read back by
-    # `_existing_accepted_embeddings` so a later switch of `EMBEDDING_MODEL_ID`
-    # can't silently compare across two different embedding spaces
-    # (DEVIATIONS.md #119: found live — mixing a `qllama/bge-large-en-v1.5`-gateway
-    # embedding with a `BAAI/bge-large-en-v1.5`-local one in the same
-    # cosine-similarity comparison produced unreliable near-duplicate results).
-    generator_meta["embedding_model_id"] = get_settings().embedding_model_id
     question = EvalQuestion(
-        text=generated["text"],
-        provenance=generated["provenance"],
-        expected_outcome=generated["expected_outcome"],
+        text=text,
+        provenance=Provenance.AUTO_GENERATED,
+        expected_outcome=expected_outcome,
         source_record_id=patient_id,
-        target_guideline_ref=generated.get("target_guideline_ref"),
-        generator_meta=generator_meta,
+        target_guideline_ref=target_guideline_ref,
+        generator_meta={"template_version": "deterministic-v1"},
         in_fixed_testset=False,
     )
     session.add(question)
@@ -577,7 +595,6 @@ def run_auto_seed_review_queue(
     composition: str,
     dataset_id: str | None = None,
     seed: int | None = None,
-    gateway: object | None = None,
     concepts_path: str = _DEFAULT_CONCEPTS_PATH,
 ) -> list[uuid.UUID]:
     """Top up the review queue to `target_count` auto-generated, auto-run
@@ -639,7 +656,7 @@ def run_auto_seed_review_queue(
     slots = allocate(remaining, comp)
 
     state = _GenerationState(
-        unused_records, seed=seed, existing_embeddings=_EXISTING_EMBEDDINGS_FN(session)
+        unused_records, seed=seed, existing_records=_EXISTING_RECORDS_FN(session)
     )
     created: list[uuid.UUID] = []
     for expected_outcome, n in slots.items():
@@ -655,7 +672,6 @@ def run_auto_seed_review_queue(
                 state,
                 expected_outcome,
                 dedup_threshold=settings.qgen_dedup_threshold,
-                gateway=gateway,
                 vocabulary=vocabulary,
             )
             if result_id is not None:
