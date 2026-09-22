@@ -1,8 +1,13 @@
-"""Deterministic ablation-study narrative construction (DEVIATIONS.md #156)."""
+"""Deterministic ablation-study narrative construction (DEVIATIONS.md #156,
+#190, #192; PRD-112 for `build_present_only_narrative`, Level 1A of the
+unified hierarchical ablation)."""
 
 from __future__ import annotations
 
-from app.eval.question_gen.deterministic import build_deterministic_narrative
+from app.eval.question_gen.deterministic import (
+    build_deterministic_narrative,
+    build_present_only_narrative,
+)
 
 RECORD = {
     "record_id": "SYNREC-TEST",
@@ -119,3 +124,69 @@ def test_empty_record_produces_only_the_topic_line_and_bare_sex_sentence() -> No
     assert "unspecified sex" in text
     assert "assessments at admission" not in text.lower()
     assert "maternal risk factors" not in text.lower()
+
+
+# ── build_present_only_narrative (Level 1A, PRD-112) ─────────────────────────
+
+
+def test_present_only_includes_present_findings_but_never_the_absent_clause() -> None:
+    text = build_present_only_narrative(RECORD, topic="x")
+    assert "the patient had grunting, and difficulty feeding." in text
+    assert "did NOT have" not in text
+    assert "convulsions" not in text  # assessed-absent -- present-only omits it entirely
+    assert "floppy" not in text
+
+
+def test_present_only_maternal_risk_factors_omit_the_absent_clause_too() -> None:
+    text = build_present_only_narrative(RECORD, topic="x")
+    assert "the mother had maternal infection" in text
+    assert "did NOT have" not in text
+    assert "prom" not in text  # assessed-absent -- omitted
+
+
+def test_present_only_still_never_infers_an_unassessed_sign_as_absent() -> None:
+    """No inference either way (UNIFIED-ABLATION-PROPOSAL.md §II): a sign
+    never assessed is never mentioned, same as today's all-assessed mode."""
+    record = {
+        **RECORD,
+        "examination_findings": [{"name": "grunting", "present": True}],  # apnoea never assessed
+        "maternal_risk_factors": [],
+    }
+    text = build_present_only_narrative(record, topic="x")
+    assert "apnoea" not in text
+    assert "had grunting" in text
+
+
+def test_present_only_omits_the_assessment_section_when_everything_assessed_was_absent() -> None:
+    """All signs assessed-absent, none present -- present-only mode has
+    nothing positive to report, so the whole section is omitted (distinct
+    from all-assessed mode, which would still render the "did NOT have"
+    line for the same record)."""
+    record = {
+        **RECORD,
+        "examination_findings": [{"name": "convulsions", "present": False}],
+        "maternal_risk_factors": [{"name": "prom", "present": False}],
+    }
+    present_only_text = build_present_only_narrative(record, topic="x")
+    all_assessed_text = build_deterministic_narrative(record, topic="x")
+    assert "assessments at admission" not in present_only_text.lower()
+    assert "maternal risk factors" not in present_only_text.lower()
+    assert "did NOT have" not in present_only_text
+    # Contrast: all-assessed mode DOES render it for the identical record.
+    assert "did NOT have convulsions" in all_assessed_text
+    assert "did NOT have prom" in all_assessed_text
+
+
+def test_present_only_and_all_assessed_agree_on_everything_but_the_absent_clause() -> None:
+    """The two Level-1 conditions must be identical apart from the
+    present/absent distinction itself (comparability requirement,
+    UNIFIED-ABLATION-PROPOSAL.md §III) -- same topic line, same demographic
+    sentence, same vitals, same present findings."""
+    present_only = build_present_only_narrative(RECORD, topic="antibiotics")
+    all_assessed = build_deterministic_narrative(RECORD, topic="antibiotics")
+    assert present_only.splitlines()[0] == all_assessed.splitlines()[0]  # topic line
+    assert "female" in present_only and "female" in all_assessed
+    assert "heart rate (bpm) 190.0" in present_only
+    assert "heart rate (bpm) 190.0" in all_assessed
+    assert "the patient had grunting, and difficulty feeding." in present_only
+    assert "the patient had grunting, and difficulty feeding." in all_assessed

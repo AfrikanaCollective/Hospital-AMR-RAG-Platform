@@ -30,6 +30,7 @@ evaluation workflow.
 | **5** | React frontend | 🔄 reopened 2026-09-17 (accessibility/contrast pass, WCAG 2.2 AA; original Checkpoint 5 approved 2026-09-14) |
 | **6** | Hybrid retrieval weight & depth calibration | ✅ complete (Checkpoint 6 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)) |
 | **7** | Single-stage vs. multi-step orchestration ablation | ✅ implemented + run live (Checkpoint 7 approved 2026-09-19, see [PHASE7-PROPOSAL.md](PHASE7-PROPOSAL.md)); real result inconclusive on this deployment's data — see DEVIATIONS #150 |
+| **8** | Unified hierarchical (Level 1 × 2 × 3) ablation, superseding Phases 6/7's separate tools | 🔄 in progress (approved via [UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md); runner/config/blend/storage/summary/report/CLI implemented and offline-verified, PRD-112/ARCH-043 added — not yet run against the real corpus; see DEVIATIONS #192–#195) |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
 data models, database schema (28 tables across 7 Postgres schemas, including
@@ -965,6 +966,42 @@ you have this set from before). That fix alone still saturated once the
 items (99 `well_supported`, 1 `missing_info_expected`) as a result. Full
 account in `DEVIATIONS.md` #186–#189.
 
+**Phase 8 — unified hierarchical ablation (2026-09-22, see
+[UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md)).** Operator
+asked to re-organize Phases 6/7's three separate ablation tools
+(`retrieval_tuning`, `model_ablation`, `orchestration_ablation`) into one
+streamlined, hierarchical study: **Level 1** (present-only vs. all-assessed
+clinical-sign query construction — a real, previously-unimplemented gap
+found while designing this, not new scope), **Level 2** (vocabulary/concept
+enrichment, reusing Phase 7's mechanism unchanged), **Level 3**
+(retrieval/embedding configuration — BM25 / BM25+SapBERT / BM25+MedCPT /
+BM25+SapBERT+MedCPT, each dense-bearing arm alpha-swept, generalizing
+Phase 6's own separate alpha tool into this hierarchy per the operator's
+explicit choice). 16 leaf arms total, MRR@K the primary metric with K/alpha
+config-driven (`ABLATION_K_VALUES`/`ABLATION_ALPHA_VALUES`, never
+hardcoded), compared via a new **paired** bootstrap CI on the delta (same
+query indices resampled for both arms — `app.eval.bootstrap
+.paired_bootstrap_ci_delta`), on top of the existing (unpaired) `bootstrap_ci`
+promoted to a shared module. Per-query results persist file-based to
+`results/ablation/<run_id>/{configuration.json,per_query_results.jsonl}`
+(operator-specified layout, not a Postgres table) alongside a 3-panel PNG
+summary report (`make unified-ablation-report`,
+`scripts/run_unified_ablation.py`). Investigating this also surfaced a real,
+pre-existing doc-drift defect: `PRD-109/110/111` and `ARCH-040/041`
+(Phases 6/7's own requirement/architecture IDs) were used throughout
+`DEVIATIONS.md`/`TRACEABILITY.md` but had never actually been written into
+`PRD.md`/`ARCHITECTURE.md` — backfilled in the same effort, alongside this
+phase's own new `PRD-112`/`ARCH-043`. New `app/eval/unified_ablation/`
+package (`runner.py`, `summary.py`, `report.py`, `per_query.py`), new
+`app/eval/ablation_config.py`/`app/eval/bootstrap.py`; 685 tests passing
+offline (same 19 pre-existing unrelated failures), all three predecessor
+modules' own test suites unchanged, confirming this work is purely
+additive. `report.py` smoke-tested live end-to-end inside the `api`
+container (synthetic summary data, PNG visually inspected — no unit tests,
+matching the established precedent that no predecessor `report.py` has
+render-level tests either). **Not yet run against the real corpus/question
+set.** Full account in `DEVIATIONS.md` #192–#195.
+
 ### Repository layout
 
 ```
@@ -987,7 +1024,9 @@ backend/
     hitl/           escalation, decisions (accept-axis effects), triggers
     rubric/         11 domains, workflow state machine, IRR, tasks
     eval/           harness, metrics, run CLI, question_gen/ (planner/generate/validate),
-                    retrieval_tuning/, model_ablation/, orchestration_ablation/
+                    retrieval_tuning/, model_ablation/, orchestration_ablation/,
+                    unified_ablation/ (runner/summary/report/per_query), ablation_config.py,
+                    bootstrap.py
     records/        criteria matching, field access/policy, concepts.py (SCOPE-2.6, eval-only)
     llm/            LLMGateway, offline stub + stub_server
     auth/ crypto/ audit/   AuthProvider, CryptoProvider, append-only audit writer
@@ -1005,6 +1044,10 @@ data/               record_schema.json; clinical_concepts.yaml (SCOPE-2.6
                     (+ manifest, source_pages-attested extracts); guideline_sources/
                     (archival full originals, never ingested); patient_records/
                     {synthetic,deidentified/<dataset>}/
+results/ablation/   unified-ablation run output, one dir per <run_id>:
+                    configuration.json (reproducibility snapshot) +
+                    per_query_results.jsonl (file-based, not Postgres —
+                    PRD-112/ARCH-043)
 ```
 
 ---
@@ -1143,6 +1186,8 @@ cd ../frontend && npm install && npm run dev
 | `make eval` | run the evaluation harness against the fixed synthetic test set |
 | `make retrieval-tuning-report` | Phase 6 BM25/vector weight × depth sweep → 1 combined 3-panel PNG report, 18cm×21cm @ 600dpi (PRD-109/ARCH-040); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra (`pip install -e .[retrieval-tuning]`) |
 | `make model-ablation-report` | SapBERT/MedCPT/BM25 embedding ablation → 1 combined 2-panel PNG report (PRD-110/ARCH-041); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and `MODEL_ABLATION_BACKEND=local` for real (non-stub) models |
+| `make orchestration-ablation-report` | Phase 7 single-stage/criteria-reuse/operator-vocabulary orchestration ablation → 1 combined 3-panel PNG report (PRD-111); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra; the operator-vocabulary arm additionally needs an attested `data/clinical_concepts.yaml` |
+| `make unified-ablation-report` | Phase 8 unified Level 1 × 2 × 3 hierarchical ablation (16 leaf arms × alpha × K) → `results/ablation/<run_id>/` + 1 combined 3-panel PNG report (PRD-112/ARCH-043); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and an attested `data/clinical_concepts.yaml` for Level 2 enrichment |
 
 ---
 

@@ -232,6 +232,18 @@ class Settings(BaseSettings):
     # ── extension seam (ARCH-026 / CDS-FUTURE.md) ── inert; do not implement.
     local_adaptation_enabled: bool = Field(default=False)
 
+    # ── unified hierarchical ablation (PRD-112 / ARCH-043) ──
+    # K and alpha are never hardcoded (UNIFIED-ABLATION-PROPOSAL.md §3.6) --
+    # one shared source, comma-parsed the same way QGEN_COMPOSITION already
+    # is. `model_ablation`/`retrieval_tuning`/`orchestration_ablation` keep
+    # their own independent K_VALUES/MRR_K constants for now (not silently
+    # migrated in this phase, proposal §8) -- only the new
+    # `app.eval.unified_ablation` package and `app.eval.ablation_config`
+    # read these.
+    ablation_k_values: str = "2,4,6,8,10,12,14,16,18,20"  # 2..20 step 2
+    ablation_alpha_values: str = "0.0,0.2,0.4,0.6,0.8,1.0"  # 0..1 step 0.2
+    ablation_mrr_k: int = 12  # matches retrieval_tuning.sweep's settled value (DEVIATIONS #183)
+
     # ── derived ──
     @property
     def fallback_model_ids(self) -> list[str]:
@@ -243,6 +255,14 @@ class Settings(BaseSettings):
         if len(parts) != _QGEN_COMPOSITION_FIELDS or sum(parts) != _QGEN_COMPOSITION_TOTAL_PERCENT:
             raise ValueError("QGEN_COMPOSITION must be three integers summing to 100")
         return parts[0], parts[1], parts[2]
+
+    @property
+    def ablation_k_values_tuple(self) -> tuple[int, ...]:
+        return tuple(int(x) for x in self.ablation_k_values.split(",") if x.strip())
+
+    @property
+    def ablation_alpha_values_tuple(self) -> tuple[float, ...]:
+        return tuple(float(x) for x in self.ablation_alpha_values.split(",") if x.strip())
 
     def is_model_placeholder(self) -> bool:
         return self.model_id.strip() in ("", PLACEHOLDER_MODEL_ID)

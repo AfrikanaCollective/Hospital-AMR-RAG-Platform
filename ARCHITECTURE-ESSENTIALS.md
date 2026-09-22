@@ -341,6 +341,30 @@ Report broken out by `expected_outcome` and **separately** for
 `auto_generated` vs `clinician_submitted`. CI fails on any gating breach or
 sub-threshold retrieval/citation metric.
 
+**Offline ablation studies (ARCH-040/041/043, PRD-109/110/111/112)** —
+independent, additive, never part of `/query`, never CI-gated, run on
+demand (`make <name>-ablation-report`) against the real corpus + the
+harness's own `gold_relevant_chunks` pool:
+- **ARCH-040** (`retrieval_tuning`): BM25/vector `alpha`×`k` sweep vs. gold
+  chunks. Real result across live re-runs: no alpha robustly beats
+  production RRF.
+- **ARCH-041** (`model_ablation`): SapBERT/MedCPT+BM25 vs. RRF, brute-force
+  in-memory ranking (these embeddings are never written to Qdrant). Real
+  result: no candidate arm's bootstrap CI clears "robustly beats RRF."
+- **ARCH-043** (`unified_ablation`, this phase): unifies 040/041's
+  retrieval/embedding axis with a new Level 1 (present-only vs.
+  all-assessed clinical-sign query construction) and Level 2 (vocabulary
+  enrichment, reuses ARCH-042's mechanism unchanged) into one hierarchical,
+  16-leaf-arm sweep; alpha is a sub-sweep inside Level 3's 3 dense-bearing
+  arms, not its own separate tool. MRR@K primary metric, K/alpha
+  config-driven, never hardcoded. Adds a **paired** bootstrap CI on deltas
+  (same query indices resampled for both arms — the existing `bootstrap_ci`
+  is unpaired). Per-query results persist to
+  `results/ablation/<run_id>/{configuration.json,per_query_results.jsonl}`
+  (file-based, not Postgres — a deliberate exception to the other two
+  modules' PNG-only convention, since per-query row count is much larger).
+  **Not yet run against the real corpus** as of this writing.
+
 ---
 
 ## 11. Security / compliance essentials

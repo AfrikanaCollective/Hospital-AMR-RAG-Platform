@@ -49,6 +49,8 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED
+from app.eval.bootstrap import bootstrap_ci as _bootstrap_ci
 from app.eval.metrics import mrr, precision_recall_at_k
 from app.eval.model_ablation.encoders import Encoder, get_medcpt_encoders, get_sapbert_encoder
 from app.eval.orchestration_ablation.ablation import load_attested_vocabulary
@@ -286,31 +288,11 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-# Bootstrap CI for panel B (DEVIATIONS.md #132, follow-up request). Percentile
-# method: resample the per-question MRR scores with replacement _BOOTSTRAP_N
-# times, take each resample's mean, then the [2.5, 97.5] percentiles of that
-# distribution as the 95% interval. A fixed seed makes repeated report runs
-# reproducible rather than jittering the CI on every regenerate — both
-# constants are judgment calls (a round resample count and an arbitrary but
-# fixed seed), not derived from anything.
-_BOOTSTRAP_N = 10_000
-_BOOTSTRAP_SEED = 1234
-_BOOTSTRAP_CI = 0.95
-
-
-def _bootstrap_ci(scores: list[float], *, rng: np.random.Generator) -> tuple[float, float]:
-    """95% percentile-bootstrap CI on the mean of `scores`. With very few
-    scores (e.g. a 2-question unit-test fixture) this is a wide, not
-    statistically meaningful interval — expected, not a bug; the real report
-    runs it over 67 real questions."""
-    if not scores:
-        return 0.0, 0.0
-    arr = np.asarray(scores, dtype=np.float64)
-    resampled = rng.choice(arr, size=(_BOOTSTRAP_N, len(arr)), replace=True)
-    means = resampled.mean(axis=1)
-    lo_pct = (1 - _BOOTSTRAP_CI) / 2 * 100
-    hi_pct = 100 - lo_pct
-    return float(np.percentile(means, lo_pct)), float(np.percentile(means, hi_pct))
+# Bootstrap CI for panel B (DEVIATIONS.md #132, follow-up request). Promoted
+# to `app.eval.bootstrap` (DEVIATIONS.md #192, PRD-112) so it has one shared
+# home instead of a private per-module copy -- imported here under its old
+# private name so every existing call site in this module is untouched.
+_BOOTSTRAP_SEED = DEFAULT_BOOTSTRAP_SEED
 
 
 def run_ablation(rankings: list[QuestionArmRankings]) -> AblationResult:

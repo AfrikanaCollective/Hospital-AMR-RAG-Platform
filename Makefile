@@ -5,7 +5,8 @@ BE      ?= cd backend &&
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
         prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock \
-        retrieval-tuning-report model-ablation-report orchestration-ablation-report
+        retrieval-tuning-report model-ablation-report orchestration-ablation-report \
+        unified-ablation-report
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -73,3 +74,6 @@ model-ablation-report: ## SapBERT/MedCPT/BM25 embedding ablation -> 2-panel PNG 
 
 orchestration-ablation-report: ## Phase 7 single-stage/criteria-reuse/vocabulary ablation -> 3-panel PNG report (PRD-111); needs real Qdrant+Postgres+seeded eval questions; Arm C needs an attested data/clinical_concepts.yaml
 	$(BE) pip install -q -e ".[retrieval-tuning]" && python -m scripts.run_orchestration_ablation
+
+unified-ablation-report: ## Unified Level 1/2/3 hierarchical ablation (16 arms x alpha x K) -> results/ablation/<run_id>/ + 3-panel PNG report (PRD-112/ARCH-043); needs real Qdrant+Postgres+seeded eval questions; Level 2 enrichment needs an attested data/clinical_concepts.yaml; set MODEL_ABLATION_BACKEND=local for real (non-stub) models
+	$(BE) pip install -q -e ".[retrieval-tuning,local-models]" && python -m scripts.run_unified_ablation

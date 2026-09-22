@@ -25,7 +25,7 @@ class ScoredChunk:
     dense_score: float
 
 
-def _min_max_normalize(scores: dict[str, float]) -> dict[str, float]:
+def min_max_normalize(scores: dict[str, float]) -> dict[str, float]:
     """Raw BM25 (TF x IDF) is unbounded positive; dense score is a bounded
     cosine similarity — not comparable un-normalized. Normalized independently
     within each query's own candidate pool (not globally), since only the
@@ -38,6 +38,13 @@ def _min_max_normalize(scores: dict[str, float]) -> dict[str, float]:
         # no information to rank on; treat them as tied rather than /0.
         return dict.fromkeys(scores, 1.0)
     return {k: (v - lo) / (hi - lo) for k, v in scores.items()}
+
+
+# Promoted to public (PRD-112, DEVIATIONS.md #192): `app.eval.unified_ablation
+# .blend` also needs this exact normalization for its own (Qdrant-ANN-free,
+# brute-force) candidate scores. Re-exported under the old private name so
+# this module's own existing call sites/tests are untouched.
+_min_max_normalize = min_max_normalize
 
 
 def fetch_candidate_scores(

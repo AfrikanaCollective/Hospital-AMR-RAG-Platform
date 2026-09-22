@@ -69,14 +69,14 @@ def _patient_sentence(record: dict) -> str:
     return ", ".join(parts) + "."
 
 
-def _maternal_risk_factors_line(record: dict) -> str | None:
+def _maternal_risk_factors_line(record: dict, *, include_absent: bool) -> str | None:
     present, absent = _tri_state_lists(record.get("maternal_risk_factors") or [])
-    if not (present or absent):
+    if not present and not (include_absent and absent):
         return None
     clauses = []
     if present:
         clauses.append(f"the mother had {_join_natural(present)}")
-    if absent:
+    if include_absent and absent:
         clauses.append(f"the mother did NOT have {_join_natural(absent)}")
     return "Maternal risk factors assessed: " + "; ".join(clauses) + "."
 
@@ -90,32 +90,50 @@ def _vitals_line(record: dict) -> str | None:
     return "Vitals at admission: " + ", ".join(parts) + "." if parts else None
 
 
-def _examination_findings_lines(record: dict) -> list[str]:
+def _examination_findings_lines(record: dict, *, include_absent: bool) -> list[str]:
     present, absent = _tri_state_lists(record.get("examination_findings") or [])
-    if not (present or absent):
+    if not present and not (include_absent and absent):
         return []
     lines = ["From assessments at admission:"]
     if present:
         lines.append(f"- the patient had {_join_natural(present)}.")
-    if absent:
+    if include_absent and absent:
         lines.append(f"- the patient did NOT have {_join_natural(absent)}.")
     return lines
 
 
-def build_deterministic_narrative(record: dict, *, topic: str) -> str:
-    """Build one ablation-study question narrative from `record` (a
-    `PatientRecord`-shaped dict) and an explicit `topic` (the caller's
-    responsibility to supply — ARCH §15.1 step 2's automatic topic-matching
-    is not implemented, DEVIATIONS.md #67/#156)."""
+def _build_narrative(record: dict, *, topic: str, include_absent: bool) -> str:
     lines: list[str] = [
         f"What does the guideline recommend about {topic} based only on "
         "the content provided below:",
         "",
         _patient_sentence(record),
     ]
-    if maternal_line := _maternal_risk_factors_line(record):
+    if maternal_line := _maternal_risk_factors_line(record, include_absent=include_absent):
         lines.append(maternal_line)
     if vitals_line := _vitals_line(record):
         lines.append(vitals_line)
-    lines.extend(_examination_findings_lines(record))
+    lines.extend(_examination_findings_lines(record, include_absent=include_absent))
     return "\n".join(lines)
+
+
+def build_deterministic_narrative(record: dict, *, topic: str) -> str:
+    """Build one ablation-study question narrative from `record` (a
+    `PatientRecord`-shaped dict) and an explicit `topic` (the caller's
+    responsibility to supply — ARCH §15.1 step 2's automatic topic-matching
+    is not implemented, DEVIATIONS.md #67/#156). Level 1B / "all assessed
+    signs" in the unified hierarchical ablation (UNIFIED-ABLATION-PROPOSAL.md
+    §3.1) — includes both present AND explicitly assessed-absent findings."""
+    return _build_narrative(record, topic=topic, include_absent=True)
+
+
+def build_present_only_narrative(record: dict, *, topic: str) -> str:
+    """Level 1A / "present-only clinical signs" (UNIFIED-ABLATION-PROPOSAL.md
+    §3.1, PRD-112): identical to `build_deterministic_narrative` except the
+    "did NOT have" clause is omitted entirely — a sign assessed and found
+    absent is simply never mentioned, same as a sign never assessed at all
+    (no way to tell the two apart from this narrative alone, by design: this
+    condition asks what changes if only positive findings are surfaced).
+    Still no inference either way — a present finding is only ever included
+    because the record itself says `present is True`."""
+    return _build_narrative(record, topic=topic, include_absent=False)

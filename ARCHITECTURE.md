@@ -1375,6 +1375,70 @@ report and (optionally) fails CI on threshold breach.
   < 100%`, `no_guideline_expected pass < 100%`, or retrieval/citation metrics
   below configured minima.
 
+### 16.3 Offline ablation studies (ARCH-040 / ARCH-041 / ARCH-043) — evidence-gathering only, no production retrieval/orchestration change
+
+Independent, additive, offline analysis pipelines — never part of the
+online `/query` path (`app.retrieval.hybrid.retrieve()`), never gated in
+CI, run on demand via `make <name>-ablation-report` against the real
+corpus and the eval harness's own auto-generated calibration-question pool
+(`gold_relevant_chunks`, §15). `ARCH-040`/`ARCH-041` were implemented and
+shipped under Checkpoints 6/7 but never backfilled into this document
+until now (a real doc-drift defect, caught and fixed alongside `ARCH-043` —
+DEVIATIONS.md #192).
+
+**ARCH-040** *(Checkpoint 6 approved 2026-09-17 — `PHASE6-PROPOSAL.md`)*:
+offline BM25/vector weighted-fusion sweep (`k` × `alpha` grid, recall@k /
+MRR@k against known gold chunks), explicitly decoupled from the ARCH-003
+production RRF path — no change to `app/retrieval/hybrid.py` or
+`vectorstore.py`'s `hybrid_search`, no new `audit.audit_event` writes. Code
+home: `app/eval/retrieval_tuning/{offline_fusion.py,sweep.py,report.py}`,
+`scripts/run_retrieval_weight_sweep.py`; tests: `tests/test_retrieval_tuning.py`.
+Real result (multiple live re-runs across corpus revisions): no alpha
+robustly beats the RRF baseline — ARCH-003 stands unmodified (full run
+history: PRD-109's `TRACEABILITY.md` row).
+
+**ARCH-041** *(approved 2026-09-17 — `PHASE2-EMBEDDING-ABLATION-PROPOSAL.md`)*:
+offline biomedical-embedding ablation (SapBERT/MedCPT + BM25 via
+client-side RRF), brute-force in-memory ranking over the full guideline
+collection — these embeddings are deliberately never written to Qdrant;
+additive `QdrantVectorStore.scroll_all`. Code home:
+`app/eval/model_ablation/{encoders.py,ablation.py,report.py}`,
+`scripts/run_model_ablation.py`; tests: `tests/test_model_ablation.py`.
+Real result: no candidate arm's bootstrap CI clears the "robustly beats
+RRF" bar at any corpus tried so far (PRD-110's `TRACEABILITY.md` row).
+
+**ARCH-043** *(this phase — PRD-112, `UNIFIED-ABLATION-PROPOSAL.md`;
+DEVIATIONS.md #192/#193)*: unifies ARCH-040/041's retrieval/embedding
+mechanism with a new Level 1 (present-only vs. all-assessed clinical-sign
+query construction, `app.eval.question_gen.deterministic
+.build_present_only_narrative`) and Level 2 (vocabulary/concept
+enrichment, reusing PRD-111/ARCH-042's `orchestration_ablation.augment
+.build_arm_c_query` unchanged) axis into one hierarchical, 16-leaf-arm
+sweep — `app.eval.ablation_config.AblationArm`/`ALL_ARMS`, generated, never
+hand-enumerated. Alpha is generalized as a sub-sweep inside Level 3's three
+dense-bearing arms (a real design decision, `UNIFIED-ABLATION-PROPOSAL.md`
+§4 point 1) rather than kept as `ARCH-040`'s own separate tool. MRR@K is
+the primary metric; K/alpha are config-driven
+(`ABLATION_K_VALUES`/`ABLATION_ALPHA_VALUES`/`ABLATION_MRR_K`,
+`app.config.Settings`), never hardcoded. Adds a **paired** bootstrap-CI
+comparison (`app.eval.bootstrap.paired_bootstrap_ci_delta` — resamples the
+same query indices for both arms of a comparison, never independent
+samples) on top of the existing (unpaired) `bootstrap_ci`, promoted from a
+private copy in `model_ablation.ablation` to this shared home. Per-query
+results persist to `results/ablation/<run_id>/
+{configuration.json,per_query_results.jsonl}` — file-based, not a Postgres
+table (operator decision, `UNIFIED-ABLATION-PROPOSAL.md` §4 point 2) —
+rather than the other two modules' PNG-only convention, since a run's
+per-query row count (16 arms × alphas × K, per query) is materially larger
+than anything a report needs to retain; the PNG report itself still
+renders alongside it in the same run directory. Code home:
+`app/eval/unified_ablation/{runner.py,summary.py,report.py,per_query.py}`,
+`app/eval/ablation_config.py`, `app/eval/bootstrap.py`,
+`scripts/run_unified_ablation.py`; tests: `tests/test_unified_ablation_
+{blend,runner,summary}.py`, `tests/test_ablation_config.py`,
+`tests/test_bootstrap.py`. **Not yet run against the real corpus** as of
+this writing — offline-verified only (DEVIATIONS.md #192/#193).
+
 ---
 
 ## 17. Security & compliance model
