@@ -30,7 +30,7 @@ evaluation workflow.
 | **5** | React frontend | 🔄 reopened 2026-09-17 (accessibility/contrast pass, WCAG 2.2 AA; original Checkpoint 5 approved 2026-09-14) |
 | **6** | Hybrid retrieval weight & depth calibration | ✅ complete (Checkpoint 6 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)) |
 | **7** | Single-stage vs. multi-step orchestration ablation | ✅ implemented + run live (Checkpoint 7 approved 2026-09-19, see [PHASE7-PROPOSAL.md](PHASE7-PROPOSAL.md)); real result inconclusive on this deployment's data — see DEVIATIONS #150 |
-| **8** | Unified hierarchical (Level 1 × 2 × 3) ablation, superseding Phases 6/7's separate tools; Level 3 restructured (2026-09-23) to a single BM25/SapBERT weighted-rank sweep, MedCPT/RRF dropped, primary metric Recall@K | ✅ implemented + run live (approved via [UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md); offline-verified + live-smoke-tested against the real corpus after the restructure — see DEVIATIONS #192–#201); full-scale re-run pending the 2,500-question ablation-holdout pool (DEVIATIONS #199/#200) |
+| **8** | Unified hierarchical (Level 1 × 2 × 3) ablation, superseding Phases 6/7's separate tools; Level 3 restructured (2026-09-23) to a single BM25/SapBERT weighted-rank sweep, MedCPT/RRF dropped, primary metric Recall@K; every delta now carries a bootstrap p-value, plus a full Recall@k×weight grid and a post-hoc best-weight-vs-BM25 test (DEVIATIONS #202) | ✅ implemented + run live (approved via [UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md); offline-verified + live-smoke-tested against the real corpus after both the restructure and the statistics extension — see DEVIATIONS #192–#202); full-scale re-run pending the 2,500-question ablation-holdout pool (DEVIATIONS #199/#200) |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
 data models, database schema (28 tables across 7 Postgres schemas, including
@@ -1072,6 +1072,26 @@ added, matching the code they tested), same 19 pre-existing unrelated
 failures. Live-smoke-tested against the real corpus (confirmed no MedCPT
 encoder ever loads). Full account in `DEVIATIONS.md` #201.
 
+**Statistical rigor extension (2026-09-23).** Every Level 1/2/3-endpoints
+delta now carries a two-sided bootstrap p-value alongside its CI
+(`app.eval.bootstrap.paired_bootstrap_test`, one shared resample pass, not
+a second independent one). Two new statistics: a full Recall@k ×
+bm25_weight grid (`summarize_level3_by_weight_and_k`, 110 points at the
+default 11-weight × 10-k config, pooled across Level 1 × Level 2), and an
+explicit post-hoc test of whether BM25 weighting helps at all
+(`summarize_best_weight_vs_bm25`) — selects whichever weight empirically
+maximizes Recall@K *after seeing the data*, then compares it to plain BM25
+(`bm25_weight=1.0`), with the CI/p-value on that comparison explicitly
+flagged (in both the code's docstring and the CLI's own printed output) as
+understating true uncertainty due to the data-dependent selection. The CLI
+now persists all of this to a new `statistical_summary.json` alongside
+`configuration.json`/`per_query_results.jsonl`. `report.py` deliberately
+untouched — this was a statistics-only request; chart visualization of
+p-values/the full grid is a flagged, not-yet-requested follow-on. 705
+tests passing offline (695 + 10 new), same 19 pre-existing unrelated
+failures. Live-smoke-tested against the real corpus. Full account in
+`DEVIATIONS.md` #202.
+
 ### Repository layout
 
 ```
@@ -1107,8 +1127,11 @@ backend/
   tests/            offline tests + fixtures/guidelines/ (CI-only synthetic set)
   results/ablation/ unified-ablation run output, one dir per <run_id>:
                     configuration.json (reproducibility snapshot) +
-                    per_query_results.jsonl (file-based, not Postgres —
-                    PRD-112/ARCH-043); gitignored except this note + .gitkeep
+                    per_query_results.jsonl + statistical_summary.json
+                    (Level 1/2/3 deltas w/ p-values, full weight x k grid,
+                    best-weight-vs-BM25 post-hoc test — DEVIATIONS #202)
+                    (file-based, not Postgres — PRD-112/ARCH-043);
+                    gitignored except this note + .gitkeep
 frontend/           Vite + React + TS: LoginPage, QueryPage, ReviewPage (rank
                     mode), EscalationsPage (standalone accept axis),
                     components/, api/client.ts, auth.ts
@@ -1257,7 +1280,7 @@ cd ../frontend && npm install && npm run dev
 | `make retrieval-tuning-report` | Phase 6 BM25/vector weight × depth sweep → 1 combined 3-panel PNG report, 18cm×21cm @ 600dpi (PRD-109/ARCH-040); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra (`pip install -e .[retrieval-tuning]`) |
 | `make model-ablation-report` | SapBERT/MedCPT/BM25 embedding ablation → 1 combined 2-panel PNG report (PRD-110/ARCH-041); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and `MODEL_ABLATION_BACKEND=local` for real (non-stub) models |
 | `make orchestration-ablation-report` | Phase 7 single-stage/criteria-reuse/operator-vocabulary orchestration ablation → 1 combined 3-panel PNG report (PRD-111); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra; the operator-vocabulary arm additionally needs an attested `data/clinical_concepts.yaml` |
-| `make unified-ablation-report` | Phase 8 unified Level 1 × 2 × 3 hierarchical ablation (BM25/SapBERT weighted-rank-fusion sweep, 11 weight points × K, primary metric Recall@K) → `results/ablation/<run_id>/` + 1 combined 3-panel PNG report (PRD-112/ARCH-043); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and an attested `data/clinical_concepts.yaml` for Level 2 enrichment |
+| `make unified-ablation-report` | Phase 8 unified Level 1 × 2 × 3 hierarchical ablation (BM25/SapBERT weighted-rank-fusion sweep, 11 weight points × K, primary metric Recall@K) → `results/ablation/<run_id>/` + `statistical_summary.json` (deltas w/ bootstrap p-values, full weight×k grid, post-hoc best-weight-vs-BM25 test — DEVIATIONS #202) + 1 combined 3-panel PNG report (PRD-112/ARCH-043); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and an attested `data/clinical_concepts.yaml` for Level 2 enrichment |
 
 ---
 

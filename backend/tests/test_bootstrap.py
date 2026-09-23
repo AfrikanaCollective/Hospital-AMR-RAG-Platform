@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from app.eval.bootstrap import bootstrap_ci, paired_bootstrap_ci_delta
+from app.eval.bootstrap import bootstrap_ci, paired_bootstrap_ci_delta, paired_bootstrap_test
 
 
 def test_bootstrap_ci_is_importable_from_its_new_shared_home() -> None:
@@ -85,3 +85,53 @@ def test_paired_bootstrap_is_narrower_than_naive_independent_resampling_on_corre
     naive_independent_width = (a_hi - a_lo) + (b_hi - b_lo)
 
     assert paired_width < naive_independent_width
+
+
+# ── paired_bootstrap_test ─────────────────────────────────────────────────
+
+
+def test_paired_bootstrap_test_ci_matches_paired_bootstrap_ci_delta_exactly() -> None:
+    """Same resampling logic, same seed -> byte-identical CI to the CI-only
+    function (DEVIATIONS.md #202) -- confirms the shared
+    `_paired_bootstrap_deltas` helper didn't drift the two apart."""
+    a = [1.0, 1.0, 0.5, 1.0, 0.5, 1.0, 1.0, 0.5, 1.0, 0.5] * 5
+    b = [0.0, 0.5, 0.0, 0.5, 0.0, 0.0, 0.5, 0.0, 0.5, 0.0] * 5
+    ci_lo, ci_hi = paired_bootstrap_ci_delta(a, b, rng=np.random.default_rng(1234))
+    test_lo, test_hi, _ = paired_bootstrap_test(a, b, rng=np.random.default_rng(1234))
+    assert test_lo == pytest.approx(ci_lo)
+    assert test_hi == pytest.approx(ci_hi)
+
+
+def test_paired_bootstrap_test_p_value_is_tiny_for_an_unambiguous_difference() -> None:
+    rng = np.random.default_rng(1234)
+    a = [1.0, 1.0, 0.5, 1.0, 0.5, 1.0, 1.0, 0.5, 1.0, 0.5] * 5  # mean 0.75
+    b = [0.0, 0.5, 0.0, 0.5, 0.0, 0.0, 0.5, 0.0, 0.5, 0.0] * 5  # mean 0.20
+    _, _, p_value = paired_bootstrap_test(a, b, rng=rng)
+    assert p_value < 0.01
+
+
+def test_paired_bootstrap_test_p_value_is_one_for_identical_arms() -> None:
+    rng = np.random.default_rng(1234)
+    scores = [1.0, 0.5, 0.0, 1.0, 0.5]
+    _, _, p_value = paired_bootstrap_test(scores, scores, rng=rng)
+    assert p_value == pytest.approx(1.0)
+
+
+def test_paired_bootstrap_test_mismatched_lengths_raises() -> None:
+    rng = np.random.default_rng(1234)
+    with pytest.raises(ValueError, match="equal-length"):
+        paired_bootstrap_test([1.0, 0.5], [1.0], rng=rng)
+
+
+def test_paired_bootstrap_test_empty_is_zero_ci_and_p_value_one() -> None:
+    rng = np.random.default_rng(1234)
+    assert paired_bootstrap_test([], [], rng=rng) == (0.0, 0.0, 1.0)
+
+
+def test_paired_bootstrap_test_p_value_never_exceeds_one() -> None:
+    rng = np.random.default_rng(1234)
+    # A near-flat difference should still yield a valid, bounded p-value.
+    a = [0.500001, 0.5, 0.500001, 0.5, 0.500001]
+    b = [0.5, 0.500001, 0.5, 0.500001, 0.5]
+    _, _, p_value = paired_bootstrap_test(a, b, rng=rng)
+    assert 0.0 <= p_value <= 1.0

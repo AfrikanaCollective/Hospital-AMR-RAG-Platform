@@ -17,6 +17,20 @@ comparison (`summarize_level3_mechanism`, proposal §11) are both removed
 set of named arms to compare, it's one continuous curve over
 `bm25_weight`. `summarize_level3_curve` replaces both.
 
+**Extended same day** (operator request, DEVIATIONS.md #202): every
+`DeltaScore` now carries a bootstrap `p_value` alongside its CI
+(`app.eval.bootstrap.paired_bootstrap_test`, one resampling pass, not a
+second independent one). Two new functions:
+`summarize_level3_by_weight_and_k` — recall@k for every (`bm25_weight`,
+`k`) combination, pooled across Level 1 x Level 2 (the full grid, not
+collapsed to one headline `k` or sliced by level); and
+`summarize_best_weight_vs_bm25` — an explicit, EXPLICITLY POST-HOC test of
+whether BM25 weighting helps at all, comparing whichever `bm25_weight`
+empirically maximizes recall@k against `bm25_weight=1.0` (pure BM25). The
+weight is selected AFTER seeing the data (the max of 11 empirical
+means) — see that function's own docstring for why its CI/p-value must be
+read differently from every other comparison in this module.
+
 Pooling convention (proposal §4 point 4, extended consistently to every
 comparison here — a judgment call, flagged): a comparison names the
 condition(s) it varies; every OTHER free dimension is marginalized by
@@ -35,7 +49,7 @@ from typing import Literal
 import numpy as np
 
 from app.eval.ablation_config import Level1Condition, Level2Condition
-from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED, bootstrap_ci, paired_bootstrap_ci_delta
+from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED, bootstrap_ci, paired_bootstrap_test
 from app.eval.unified_ablation.per_query import PerQueryResult
 
 Metric = Literal["recall", "mrr"]
@@ -58,7 +72,9 @@ class ArmScore:
 class DeltaScore:
     """`mean_delta` = mean(scores_a) - mean(scores_b), over the queries
     common to both (a true paired comparison — a query missing from either
-    side contributes to neither)."""
+    side contributes to neither). `p_value` (DEVIATIONS.md #202) is a
+    two-sided bootstrap p-value on the null hypothesis mean_delta == 0,
+    from the SAME resampling pass as `ci_low`/`ci_high`."""
 
     label_a: str
     label_b: str
@@ -66,6 +82,7 @@ class DeltaScore:
     mean_delta: float
     ci_low: float
     ci_high: float
+    p_value: float
 
 
 def per_query_scores(
@@ -112,7 +129,7 @@ def _delta_score(
     shared = sorted(set(scores_a) & set(scores_b))
     a = [scores_a[q] for q in shared]
     b = [scores_b[q] for q in shared]
-    lo, hi = paired_bootstrap_ci_delta(a, b, rng=rng)
+    lo, hi, p_value = paired_bootstrap_test(a, b, rng=rng)
     mean_delta = float(np.mean(a) - np.mean(b)) if shared else 0.0
     return DeltaScore(
         label_a=label_a,
@@ -121,6 +138,7 @@ def _delta_score(
         mean_delta=mean_delta,
         ci_low=lo,
         ci_high=hi,
+        p_value=p_value,
     )
 
 
@@ -252,3 +270,104 @@ def summarize_level3_curve(
                 )
             )
     return out
+
+
+@dataclass(frozen=True)
+class WeightKPoint:
+    bm25_weight: float
+    k: int
+    score: ArmScore
+
+
+def summarize_level3_by_weight_and_k(
+    rows: list[PerQueryResult],
+    *,
+    k_values: tuple[int, ...],
+    weight_values: tuple[float, ...],
+    metric: Metric = "recall",
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> list[WeightKPoint]:
+    """recall@k (or MRR@k) for EVERY (`bm25_weight`, `k`) combination
+    (DEVIATIONS.md #202, operator request 2026-09-23: "Recall @ k for k
+    range between 2 and 20... for each of the following [11 weights]") —
+    the full grid, not collapsed to one headline `k`. Pooled across Level 1
+    x Level 2 (same pooling convention as every other comparison in this
+    module, proposal §4 point 4, extended here): Level 3 doesn't vary L1/L2,
+    so a query's score at a given (weight, k) is averaged across whichever
+    L1/L2 rows it has, same as `summarize_level1`/`summarize_level2` pool
+    over bm25_weight for their own comparisons. `k_values`/`weight_values`
+    are caller-supplied (`app.eval.ablation_config.k_values()`/
+    `.bm25_weight_values()`), never hardcoded."""
+    rng = np.random.default_rng(seed)
+    return [
+        WeightKPoint(
+            bm25_weight=w,
+            k=k,
+            score=_arm_score(
+                f"w={w}/k={k}",
+                per_query_scores(rows, k=k, metric=metric, bm25_weight=w),
+                rng=rng,
+            ),
+        )
+        for w in weight_values
+        for k in k_values
+    ]
+
+
+@dataclass(frozen=True)
+class BestWeightVsBM25:
+    """Whether BM25 weighting helps at all: the `bm25_weight` with the
+    highest EMPIRICAL recall@k (selected AFTER seeing the data — the max
+    of `len(weight_values)` sample means) vs. `bm25_weight=1.0` (pure
+    BM25), at one caller-specified `k`.
+
+    **Read `delta`'s CI/p-value with the selection in mind.** This is a
+    post-hoc comparison, not a pre-registered one: picking whichever of 11
+    weights happened to score highest on this sample, then testing THAT
+    weight against BM25, is a textbook multiple-comparisons / "winner's
+    curse" setup — the nominal 95% CI and p-value describe the sampling
+    distribution of *that specific pre-chosen* comparison, not of
+    "the best of 11 empirical picks," so the true false-positive rate for
+    "the best weight really beats BM25" is higher than the CI/p-value
+    alone would suggest. `selected_weight` is reported explicitly so the
+    selection is never hidden in the number."""
+
+    k: int
+    selected_weight: float
+    selected_weight_score: ArmScore
+    bm25_score: ArmScore  # bm25_weight = 1.0
+    delta: DeltaScore  # selected_weight - bm25_weight=1.0
+
+
+def summarize_best_weight_vs_bm25(
+    rows: list[PerQueryResult],
+    *,
+    k: int,
+    weight_values: tuple[float, ...],
+    metric: Metric = "recall",
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> BestWeightVsBM25:
+    """`weight_values` should include `1.0` (pure BM25) — if it doesn't,
+    `bm25_weight=1.0` is still evaluated separately as the comparison
+    baseline (DEVIATIONS.md #202)."""
+    rng = np.random.default_rng(seed)
+    per_weight = {
+        w: per_query_scores(rows, k=k, metric=metric, bm25_weight=w) for w in weight_values
+    }
+
+    def _mean(scores: dict[str, float]) -> float:
+        return float(np.mean(list(scores.values()))) if scores else float("-inf")
+
+    selected_weight = max(weight_values, key=lambda w: _mean(per_weight[w]))
+    selected_scores = per_weight[selected_weight]
+    bm25_scores = per_weight.get(1.0) or per_query_scores(rows, k=k, metric=metric, bm25_weight=1.0)
+
+    return BestWeightVsBM25(
+        k=k,
+        selected_weight=selected_weight,
+        selected_weight_score=_arm_score(f"best(w={selected_weight})", selected_scores, rng=rng),
+        bm25_score=_arm_score("w=1.0(bm25)", bm25_scores, rng=rng),
+        delta=_delta_score(
+            f"best(w={selected_weight})", "w=1.0(bm25)", selected_scores, bm25_scores, rng=rng
+        ),
+    )

@@ -1418,9 +1418,10 @@ sweep — `app.eval.ablation_config.AblationArm`/`ALL_ARMS`, generated, never
 hand-enumerated. Alpha is generalized as a sub-sweep inside Level 3's three
 dense-bearing arms (a real design decision, `UNIFIED-ABLATION-PROPOSAL.md`
 §4 point 1) rather than kept as `ARCH-040`'s own separate tool. MRR@K is
-the primary metric; K/alpha are config-driven
+the primary metric at the time; K/alpha were config-driven
 (`ABLATION_K_VALUES`/`ABLATION_ALPHA_VALUES`/`ABLATION_MRR_K`,
-`app.config.Settings`), never hardcoded. Adds a **paired** bootstrap-CI
+`app.config.Settings`), never hardcoded — see the 2026-09-23 restructuring
+below for the current metric/config-field names. Adds a **paired** bootstrap-CI
 comparison (`app.eval.bootstrap.paired_bootstrap_ci_delta` — resamples the
 same query indices for both arms of a comparison, never independent
 samples) on top of the existing (unpaired) `bootstrap_ci`, promoted from a
@@ -1470,6 +1471,26 @@ The combined report returns to 3 panels; Panel C is now a real line chart
 (BM25 weight vs. recall@k, one line per Level-1×Level-2 slice) rather than
 a point-with-CI arm comparison. Full result + reproducibility snapshot:
 `TRACEABILITY.md`'s `PRD-112` row; DEVIATIONS.md #192–#201.
+
+**Extended 2026-09-23, statistical rigor** (operator request, DEVIATIONS.md
+#202): every Level 1/2/3-endpoints delta now carries a two-sided bootstrap
+p-value (`app.eval.bootstrap.paired_bootstrap_test` — the same shared
+resample pass as the existing CI, not a second independent one). Two new
+statistics: `summarize_level3_by_weight_and_k` — the full Recall@k ×
+`bm25_weight` grid (110 points at the default config), pooled across
+Level 1 × Level 2 — and `summarize_best_weight_vs_bm25`, an explicit
+**post-hoc** test of whether BM25 weighting helps at all: it selects
+whichever `bm25_weight` empirically maximizes Recall@K *after seeing the
+data*, then computes a paired delta+CI+p-value against plain BM25
+(`bm25_weight=1.0`) — its own docstring and the CLI's printed output both
+flag this CI/p-value as understating true uncertainty (winner's-curse /
+multiple-comparisons bias), per the operator's own explicit instruction.
+The CLI persists all Level 1/2/3 statistics, including the new grid and
+post-hoc test, to a new `statistical_summary.json` in the run directory,
+alongside the existing `configuration.json`/`per_query_results.jsonl`.
+`report.py`'s panels are unchanged by this entry. Full result +
+reproducibility snapshot: `TRACEABILITY.md`'s `PRD-112` row; DEVIATIONS.md
+#192–#202.
 
 ---
 

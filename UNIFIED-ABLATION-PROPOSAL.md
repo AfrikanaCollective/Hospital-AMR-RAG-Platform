@@ -647,3 +647,107 @@ corpus three times while fixing the Panel C layout bug, confirmed no
 MedCPT encoder ever loads. **Not yet run at full scale** — pending the
 2,500-question ablation-holdout pool (DEVIATIONS #199/#200) finishing
 generation. Full account: DEVIATIONS.md #201.
+
+## 13. Statistical rigor extension (2026-09-23, DEVIATIONS.md #202) —
+extends §12, does not replace it
+
+Same day as §12's restructuring, the operator specified the exact
+statistical comparisons required, at minimum, across all ablation
+conditions: paired Δ Recall@K with a 95% CI **and a p-value** for Level 1
+and Level 2; the full Recall@k curve (k ∈ {2,4,...,20}) for every one of
+Level 3's 11 `bm25_weight` values, with CIs; and an explicit test of
+"whether BM25 weighting helps at all," comparing the single best-performing
+weight (chosen **after seeing the data**, at a single k also chosen after
+seeing the data) against plain BM25 (`bm25_weight=1.0`) — with the
+instruction that "the CI/p-value on that specific delta should be
+interpreted with that in mind."
+
+### 13.1 p-values on every existing delta
+
+`app.eval.bootstrap.paired_bootstrap_test(scores_a, scores_b, *, rng, ...)`
+is a new function alongside the existing `paired_bootstrap_ci_delta` (kept,
+unchanged, for callers that only want the CI) — both share one
+`_paired_bootstrap_deltas` resampling helper so they can never drift apart
+(verified by a test asserting byte-identical CIs given the same seed). The
+p-value is the standard two-sided percentile-bootstrap p-value: the
+empirical fraction of resampled deltas on the opposite side of zero from
+the observed point estimate, doubled, capped at 1.0 — computed from the
+**same** resample pass as the CI, not a second independent one.
+`summary.DeltaScore` gained a `p_value: float` field via a new shared
+`_delta_score` helper, so every existing delta in the module (Level 1,
+Level 2, Level 3's endpoints-delta) carries a p-value with no call-site
+restructuring beyond the helper swap.
+
+### 13.2 The full Level 3 grid
+
+`summarize_level3_by_weight_and_k(rows, *, k_values, weight_values, ...)`
+returns one `WeightKPoint` per (`bm25_weight`, `k`) pair — 110 points at
+the default 11-weight × 10-k config — **pooled across Level 1 × Level 2**.
+This pooling is a judgment call, not explicitly confirmed with the
+operator before implementing (flagged per `DEVIATIONS.md`'s own
+append-the-moment-a-call-is-made convention): Level 3 doesn't itself vary
+Level 1/Level 2, so the project's existing "marginalize every dimension
+not being directly compared" convention extends naturally here, and it
+matches the operator's own framing ("at minimum, across all ablation
+conditions, calculate...").
+
+### 13.3 The post-hoc best-weight-vs-BM25 test
+
+`summarize_best_weight_vs_bm25(rows, *, k, weight_values, ...)` selects
+whichever `bm25_weight` empirically maximizes mean recall@k — a
+data-dependent, "cherry-picked" selection, exactly as specified — then
+computes a paired delta+CI+p-value between that selected weight and
+`bm25_weight=1.0`. The returned `BestWeightVsBM25` dataclass reports
+`selected_weight` explicitly (so the selection is never hidden in the
+number) and carries an extensive docstring on its own `delta` field
+warning about winner's-curse/multiple-comparisons bias — treated as a hard
+requirement given the operator's own explicit instruction to interpret
+this specific CI/p-value with the selection in mind, not merely a
+suggestion to mention it once.
+
+### 13.4 Persistence and CLI
+
+`scripts/run_unified_ablation.py` prints every delta's p-value alongside
+its CI, prints the full-grid point count and the post-hoc result
+(including its caveat inline in the printed text), and persists all of
+it — via `dataclasses.asdict()` — to a new `statistical_summary.json` in
+the run directory, alongside the existing `configuration.json`/
+`per_query_results.jsonl`. The statistics section of `main()` was factored
+into a `_report_statistics()` helper purely to stay under ruff's
+statement-count lint limit once the new calls were added.
+
+### 13.5 Deliberately out of scope for this entry
+
+`report.py` is unchanged — the operator's request was for the statistical
+calculations themselves (now fully available in stdout and
+`statistical_summary.json`), not chart changes. Visualizing the new
+statistics (p-value annotations, a grid heatmap, a best-weight marker) is
+a plausible follow-on the operator has not asked for.
+
+### 13.6 A flagged pre-existing interaction (not introduced here, not fixed)
+
+`mrr_k()` (the headline `k` used for every Level 1/2/3-endpoints delta)
+and `k_values()` (the swept k-grid) are independent config values with no
+validation that the former is a member of the latter — established in
+§12, surfaced during this entry's own live smoke-testing. Overriding
+`--k-values` to a set excluding the headline `k` silently produces
+"no data at that k" for every headline delta (`mean_delta=+0.000`,
+`p_value=1.0000`), indistinguishable at a glance from a genuine null
+result. The shipped default config is unaffected (`mrr_k()=12` is always
+inside the default `k_values()=(2,4,...,20)`); not fixed here as it was
+out of scope for this entry's request.
+
+### 13.7 Verification
+
+Offline: 705 tests passing (695 + 10 new: 6 in `test_bootstrap.py`, 4 in
+`test_unified_ablation_summary.py`), same 19 pre-existing unrelated
+failures, `ruff format`/`ruff check`/`mypy` clean on every changed file.
+Live: the full CLI smoke-tested against the real corpus with the default
+k-grid, producing genuine non-degenerate p-values, a correctly-pooled
+30-point grid (reduced weight set for speed), and a `best_weight_vs_bm25`
+result correctly resolving to "BM25 is already the best weight" for this
+corpus/config (zero delta, p=1.0). `statistical_summary.json` inspected
+directly for structure and spot-checked by value. The pre-existing 3-panel
+report re-rendered and visually re-inspected — no layout regressions, as
+expected since `report.py` was not touched. Full account: DEVIATIONS.md
+#202.

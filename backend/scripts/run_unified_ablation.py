@@ -35,18 +35,21 @@ failing or running Arm-C-equivalent logic against a placeholder.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import get_settings
 from app.db.session import session_scope
-from app.eval.ablation_config import bm25_weight_values, k_values, mrr_k
+from app.eval.ablation_config import Level1Condition, bm25_weight_values, k_values, mrr_k
 from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED
 from app.eval.orchestration_ablation.ablation import load_attested_vocabulary
 from app.eval.unified_ablation.per_query import (
+    PerQueryResult,
     run_dir_for,
     write_configuration,
     write_per_query_results,
@@ -54,8 +57,13 @@ from app.eval.unified_ablation.per_query import (
 from app.eval.unified_ablation.report import generate_report
 from app.eval.unified_ablation.runner import run_unified_ablation
 from app.eval.unified_ablation.summary import (
+    Level1Summary,
+    Level2Summary,
+    Level3Curve,
+    summarize_best_weight_vs_bm25,
     summarize_level1,
     summarize_level2,
+    summarize_level3_by_weight_and_k,
     summarize_level3_curve,
 )
 from app.retrieval.vectorstore import QdrantVectorStore
@@ -75,6 +83,72 @@ def _parse_values(raw: str | None, *, env_var: str) -> None:
     second, competing source of truth (proposal §3.6: "never hardcoded")."""
     if raw is not None:
         os.environ[env_var] = raw
+
+
+def _report_statistics(
+    rows: list[PerQueryResult],
+    *,
+    k: int,
+    weights: tuple[float, ...],
+    ks: tuple[int, ...],
+    run_dir: Path,
+) -> tuple[Level1Summary, dict[Level1Condition, Level2Summary], list[Level3Curve]]:
+    """Computes, prints, and persists the Level 1/2/3 statistical comparisons
+    (DEVIATIONS.md #202) -- split out of `main()` to keep it under ruff's
+    statement-count limit (PLR0915), not a reusable abstraction elsewhere."""
+    l1 = summarize_level1(rows, k=k)
+    l2 = summarize_level2(rows, k=k)
+    l3 = summarize_level3_curve(rows, k=k, weight_values=weights)
+    l3_grid = summarize_level3_by_weight_and_k(rows, k_values=ks, weight_values=weights)
+    best_vs_bm25 = summarize_best_weight_vs_bm25(rows, k=k, weight_values=weights)
+
+    print(
+        f"[unified-ablation] Level 1 delta (present-only - all-assessed) Recall@{k}: "
+        f"{l1.delta.mean_delta:+.3f} [{l1.delta.ci_low:+.3f}, {l1.delta.ci_high:+.3f}], "
+        f"p={l1.delta.p_value:.4f}"
+    )
+    for level1, l2_summary in l2.items():
+        d = l2_summary.delta
+        print(
+            f"[unified-ablation] Level 2 delta ({level1}, enriched - raw) Recall@{k}: "
+            f"{d.mean_delta:+.3f} [{d.ci_low:+.3f}, {d.ci_high:+.3f}], p={d.p_value:.4f}"
+        )
+    for curve in l3:
+        d = curve.endpoints_delta
+        print(
+            f"[unified-ablation] Level 3 delta ({curve.level1}/{curve.level2}, "
+            f"bm25_weight=1.0 - bm25_weight=0.0) Recall@{k}: {d.mean_delta:+.3f} "
+            f"[{d.ci_low:+.3f}, {d.ci_high:+.3f}], p={d.p_value:.4f}"
+        )
+    print(
+        f"[unified-ablation] Level 3 full grid: Recall@k computed for {len(weights)} "
+        f"bm25_weight value(s) x {len(ks)} k value(s) = {len(l3_grid)} points "
+        f"(pooled across Level 1 x Level 2) -- see statistical_summary.json"
+    )
+    print(
+        f"[unified-ablation] Does BM25 weighting help at all? best bm25_weight="
+        f"{best_vs_bm25.selected_weight} (selected AFTER seeing the data) vs. "
+        f"bm25_weight=1.0 (pure BM25), Recall@{k}: "
+        f"{best_vs_bm25.delta.mean_delta:+.3f} [{best_vs_bm25.delta.ci_low:+.3f}, "
+        f"{best_vs_bm25.delta.ci_high:+.3f}], p={best_vs_bm25.delta.p_value:.4f} "
+        f"-- POST-HOC: the weight was picked as the max of "
+        f"{len(weights)} empirical means, so this CI/p-value understates the true "
+        f"uncertainty of 'does the best of these weights beat BM25' (multiple-comparisons "
+        f"/ winner's-curse caveat -- see BestWeightVsBM25's own docstring)."
+    )
+
+    statistical_summary = {
+        "k": k,
+        "level1": asdict(l1),
+        "level2": {level1: asdict(s) for level1, s in l2.items()},
+        "level3_curve": [asdict(c) for c in l3],
+        "level3_by_weight_and_k": [asdict(p) for p in l3_grid],
+        "best_weight_vs_bm25": asdict(best_vs_bm25),
+    }
+    summary_path = run_dir / "statistical_summary.json"
+    summary_path.write_text(json.dumps(statistical_summary, indent=2), encoding="utf-8")
+    print(f"[unified-ablation] wrote {summary_path}")
+    return l1, l2, l3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -174,26 +248,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[unified-ablation] wrote {run_dir / 'per_query_results.jsonl'}")
 
     k = mrr_k()
-    l1 = summarize_level1(rows, k=k)
-    l2 = summarize_level2(rows, k=k)
-    l3 = summarize_level3_curve(rows, k=k, weight_values=bm25_weight_values())
-    print(
-        f"[unified-ablation] Level 1 delta (present-only - all-assessed) Recall@{k}: "
-        f"{l1.delta.mean_delta:+.3f} [{l1.delta.ci_low:+.3f}, {l1.delta.ci_high:+.3f}]"
+    l1, l2, l3 = _report_statistics(
+        rows, k=k, weights=bm25_weight_values(), ks=k_values(), run_dir=run_dir
     )
-    for level1, l2_summary in l2.items():
-        print(
-            f"[unified-ablation] Level 2 delta ({level1}, enriched - raw) Recall@{k}: "
-            f"{l2_summary.delta.mean_delta:+.3f} "
-            f"[{l2_summary.delta.ci_low:+.3f}, {l2_summary.delta.ci_high:+.3f}]"
-        )
-    for curve in l3:
-        d = curve.endpoints_delta
-        print(
-            f"[unified-ablation] Level 3 delta ({curve.level1}/{curve.level2}, "
-            f"bm25_weight=1.0 - bm25_weight=0.0) Recall@{k}: {d.mean_delta:+.3f} "
-            f"[{d.ci_low:+.3f}, {d.ci_high:+.3f}]"
-        )
 
     report_path = generate_report(l1, l2, l3, k=k, out_dir=out_dir)
     print(f"[unified-ablation] wrote {report_path}")

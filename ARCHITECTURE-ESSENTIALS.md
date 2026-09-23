@@ -379,7 +379,15 @@ harness's own `gold_relevant_chunks` pool:
   unused); `ALL_ARMS` 28 → 4. Primary metric MRR@K → **Recall@K** (K still
   config-driven; MRR@K kept secondary). `alpha` renamed `bm25_weight`.
   Report back to 3 panels, Level 3 now a real line chart. Still not acted
-  on — production retrieval untouched (DEVIATIONS.md #201).
+  on — production retrieval untouched (DEVIATIONS.md #201). **Extended
+  2026-09-23, statistical rigor** — every Level 1/2/3-endpoints delta now
+  carries a two-sided bootstrap p-value (`paired_bootstrap_test`, same
+  resample pass as the CI); new full Recall@k×`bm25_weight` grid
+  (110 points, pooled across Level 1×Level 2) and an explicit **post-hoc**
+  best-weight-vs-BM25 test (selects the empirically-best weight after
+  seeing the data, compares it to `bm25_weight=1.0`) with a flagged
+  winner's-curse caveat on its own CI/p-value. Persisted to a new
+  `statistical_summary.json`. Report panels unchanged (DEVIATIONS.md #202).
 
 ---
 

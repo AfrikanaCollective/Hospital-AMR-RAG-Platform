@@ -11,8 +11,10 @@ import pytest
 from app.eval.unified_ablation.per_query import PerQueryResult
 from app.eval.unified_ablation.summary import (
     per_query_scores,
+    summarize_best_weight_vs_bm25,
     summarize_level1,
     summarize_level2,
+    summarize_level3_by_weight_and_k,
     summarize_level3_curve,
 )
 
@@ -112,6 +114,7 @@ def test_summarize_level1_mean_and_delta_match_the_constant_per_query_values() -
     assert summary.delta.mean_delta == pytest.approx(0.7 - 0.3)
     assert summary.delta.n == 2
     assert summary.delta.ci_low <= summary.delta.mean_delta <= summary.delta.ci_high
+    assert 0.0 <= summary.delta.p_value <= 1.0
 
 
 def test_summarize_level1_zero_delta_when_conditions_are_identical() -> None:
@@ -120,6 +123,7 @@ def test_summarize_level1_zero_delta_when_conditions_are_identical() -> None:
     assert summary.delta.mean_delta == 0.0
     assert summary.delta.ci_low == 0.0
     assert summary.delta.ci_high == 0.0
+    assert summary.delta.p_value == pytest.approx(1.0)  # no difference -> p=1
 
 
 def test_summarize_level2_produces_one_entry_per_level1_condition() -> None:
@@ -172,3 +176,112 @@ def test_summarize_level3_curve_metric_selector_uses_mrr_when_requested() -> Non
     curves = summarize_level3_curve(rows, k=_K, weight_values=(1.0,), metric="mrr")
     matching = next(c for c in curves if c.level1 == "present_only" and c.level2 == "raw")
     assert matching.points[0].score.mean == pytest.approx(0.25)
+
+
+# ── summarize_level3_by_weight_and_k ──────────────────────────────────────
+
+_K_VALUES = (2, 4)
+
+
+def _row_for_k(*, query_id: str, k: int, bm25_weight: float, recall: float) -> PerQueryResult:
+    return PerQueryResult(
+        query_id=query_id,
+        patient_id_or_case_id="rec-1",
+        experiment_id="exp-1",
+        level1_condition="present_only",
+        level2_condition="raw",
+        level3_condition="bm25_sapbert",
+        k=k,
+        bm25_weight=bm25_weight,
+        query_text="ignored",
+        concept_enriched_query="ignored",
+        retrieved_ids=["c1"],
+        relevant_ids=["c1"],
+        first_relevant_rank=1,
+        recall_at_k=recall,
+        reciprocal_rank_at_k=recall,
+    )
+
+
+def test_summarize_level3_by_weight_and_k_covers_the_full_grid() -> None:
+    rows = [
+        _row_for_k(query_id="q1", k=k, bm25_weight=w, recall=0.5)
+        for w in _WEIGHTS
+        for k in _K_VALUES
+    ]
+    points = summarize_level3_by_weight_and_k(rows, k_values=_K_VALUES, weight_values=_WEIGHTS)
+    assert len(points) == len(_WEIGHTS) * len(_K_VALUES)
+    seen = {(p.bm25_weight, p.k) for p in points}
+    assert seen == {(w, k) for w in _WEIGHTS for k in _K_VALUES}
+    assert all(p.score.mean == pytest.approx(0.5) for p in points)
+
+
+def test_summarize_level3_by_weight_and_k_pools_across_level1_and_level2() -> None:
+    """Level 3 doesn't vary L1/L2 -- a query's score at one (weight, k)
+    pools across whichever L1/L2 rows it has (same convention as Level 1/2
+    pooling over bm25_weight)."""
+    rows = [
+        PerQueryResult(
+            query_id="q1",
+            patient_id_or_case_id="rec-1",
+            experiment_id="exp-1",
+            level1_condition="present_only",
+            level2_condition="raw",
+            level3_condition="bm25_sapbert",
+            k=2,
+            bm25_weight=1.0,
+            query_text="ignored",
+            concept_enriched_query="ignored",
+            retrieved_ids=["c1"],
+            relevant_ids=["c1"],
+            first_relevant_rank=1,
+            recall_at_k=1.0,
+            reciprocal_rank_at_k=1.0,
+        ),
+        PerQueryResult(
+            query_id="q1",
+            patient_id_or_case_id="rec-1",
+            experiment_id="exp-1",
+            level1_condition="all_assessed",
+            level2_condition="enriched",
+            level3_condition="bm25_sapbert",
+            k=2,
+            bm25_weight=1.0,
+            query_text="ignored",
+            concept_enriched_query="ignored",
+            retrieved_ids=["c1"],
+            relevant_ids=["c1"],
+            first_relevant_rank=1,
+            recall_at_k=0.0,
+            reciprocal_rank_at_k=0.0,
+        ),
+    ]
+    points = summarize_level3_by_weight_and_k(rows, k_values=(2,), weight_values=(1.0,))
+    assert len(points) == 1
+    assert points[0].score.mean == pytest.approx((1.0 + 0.0) / 2)
+
+
+# ── summarize_best_weight_vs_bm25 ─────────────────────────────────────────
+
+
+def test_summarize_best_weight_vs_bm25_selects_the_highest_scoring_weight() -> None:
+    rows = [
+        _row_for_k(query_id="q1", k=4, bm25_weight=0.0, recall=0.2),
+        _row_for_k(query_id="q1", k=4, bm25_weight=0.5, recall=0.9),  # the best
+        _row_for_k(query_id="q1", k=4, bm25_weight=1.0, recall=0.3),
+    ]
+    result = summarize_best_weight_vs_bm25(rows, k=4, weight_values=(0.0, 0.5, 1.0))
+    assert result.selected_weight == pytest.approx(0.5)
+    assert result.selected_weight_score.mean == pytest.approx(0.9)
+    assert result.bm25_score.mean == pytest.approx(0.3)
+    assert result.delta.mean_delta == pytest.approx(0.6)  # 0.9 - 0.3
+
+
+def test_summarize_best_weight_vs_bm25_zero_delta_when_bm25_is_already_best() -> None:
+    rows = [
+        _row_for_k(query_id="q1", k=4, bm25_weight=0.0, recall=0.2),
+        _row_for_k(query_id="q1", k=4, bm25_weight=1.0, recall=0.9),  # bm25 itself is the best
+    ]
+    result = summarize_best_weight_vs_bm25(rows, k=4, weight_values=(0.0, 1.0))
+    assert result.selected_weight == pytest.approx(1.0)
+    assert result.delta.mean_delta == pytest.approx(0.0)
