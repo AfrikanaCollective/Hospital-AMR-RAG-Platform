@@ -30,7 +30,7 @@ evaluation workflow.
 | **5** | React frontend | 🔄 reopened 2026-09-17 (accessibility/contrast pass, WCAG 2.2 AA; original Checkpoint 5 approved 2026-09-14) |
 | **6** | Hybrid retrieval weight & depth calibration | ✅ complete (Checkpoint 6 approved 2026-09-17, see [PHASE6-PROPOSAL.md](PHASE6-PROPOSAL.md)) |
 | **7** | Single-stage vs. multi-step orchestration ablation | ✅ implemented + run live (Checkpoint 7 approved 2026-09-19, see [PHASE7-PROPOSAL.md](PHASE7-PROPOSAL.md)); real result inconclusive on this deployment's data — see DEVIATIONS #150 |
-| **8** | Unified hierarchical (Level 1 × 2 × 3) ablation, superseding Phases 6/7's separate tools | 🔄 in progress (approved via [UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md); runner/config/blend/storage/summary/report/CLI implemented and offline-verified, PRD-112/ARCH-043 added — not yet run against the real corpus; see DEVIATIONS #192–#195) |
+| **8** | Unified hierarchical (Level 1 × 2 × 3) ablation, superseding Phases 6/7's separate tools; Level 3 restructured (2026-09-23) to a single BM25/SapBERT weighted-rank sweep, MedCPT/RRF dropped, primary metric Recall@K | ✅ implemented + run live (approved via [UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md); offline-verified + live-smoke-tested against the real corpus after the restructure — see DEVIATIONS #192–#201); full-scale re-run pending the 2,500-question ablation-holdout pool (DEVIATIONS #199/#200) |
 
 Phase 1 delivers a **navigable skeleton**: folder structure, stub modules,
 data models, database schema (28 tables across 7 Postgres schemas, including
@@ -999,8 +999,78 @@ modules' own test suites unchanged, confirming this work is purely
 additive. `report.py` smoke-tested live end-to-end inside the `api`
 container (synthetic summary data, PNG visually inspected — no unit tests,
 matching the established precedent that no predecessor `report.py` has
-render-level tests either). **Not yet run against the real corpus/question
-set.** Full account in `DEVIATIONS.md` #192–#195.
+render-level tests either). Full account in `DEVIATIONS.md` #192–#195.
+
+**Run for real (2026-09-22).** `MODEL_ABLATION_BACKEND=local` (real
+SapBERT/MedCPT, both checkpoints already HF-cached from Phase 6's own real
+run), against the live 311-chunk corpus and 238 real `well_supported`
+calibration questions (all 238 resolving against the real record index —
+checked before launching, unlike PRD-111's own first live attempt, which
+found 0/N resolving). Completed in ~3 minutes; 180,880 rows written. **A
+genuinely non-flat, statistically distinguishable result — the first among
+all four ablation modules where multiple 95% CIs exclude zero** (every
+prior module's real run found substantially overlapping CIs, "no arm
+robustly beats RRF"): **Level 1** — all-assessed beats present-only,
+MRR@12 delta −0.030 [−0.037, −0.024]. **Level 2** — vocabulary enrichment
+helps in both Level-1 conditions, +0.031 / +0.035, neither CI crosses
+zero. **Level 3** — BM25+SapBERT robustly beats plain BM25 in all 4
+Level-1×Level-2 slices (+0.075 to +0.150, the largest and most consistent
+effect in the study); BM25+MedCPT robustly *underperforms* BM25 in 3 of 4
+slices (−0.030 to −0.116); BM25+SapBERT+MedCPT is mixed (positive in 3 of
+4, indistinguishable from BM25 in the 4th). **Not acted on** — per this
+study's own explicit out-of-scope boundary, `app.retrieval.hybrid.retrieve()`
+(the production `/query` path) is untouched; deciding whether to act on
+this result is a separate, unapproved, later decision. Two unrelated real
+bugs found and fixed while handling the run's own output: `results/` had
+no `.gitignore` entry at all (this one run's `per_query_results.jsonl` is
+472MB — now excluded, with a small `README.md` + `.gitkeep` kept), and the
+repository-layout tree above had `results/ablation/` placed at the repo
+root instead of under `backend/` (where the CLI's own CWD-relative default
+actually resolves it) — both fixed. Full account in `DEVIATIONS.md` #197.
+
+**RRF added to Level 3 (2026-09-23), run live.** Operator asked whether
+RRF — production's actual fusion mechanism — could be combined with the
+same hierarchy; drafted as an addendum to
+[UNIFIED-ABLATION-PROPOSAL.md](UNIFIED-ABLATION-PROPOSAL.md) §11 with
+three design options, operator chose **Option B**: an RRF-fusion
+counterpart for every existing dense-bearing alpha-blend arm (not just one
+combined 3-way arm), so channel choice and fusion mechanism are both
+independently testable. `ALL_ARMS` grew from 16 to 28; new
+`summarize_level3_mechanism` answers the specific question this addendum
+was built for (does an alpha-blend arm's effect survive under RRF, same
+channel); the combined report gained a 4th panel. Reuses
+`model_ablation.ablation._rrf_combine` and `app.config.Settings.rrf_k`
+unchanged — no new retrieval logic. **Real result**: RRF does not merely
+preserve the SapBERT effect found in the original run above — it modestly
+**amplifies** it (`rrf_sapbert` beats its own `bm25_sapbert` sibling in
+all 4 Level-1×Level-2 slices, MRR@12 delta +0.053 to +0.109); MedCPT's own
+mechanism comparison stays mixed/near-zero. Not acted on — production
+retrieval untouched. 699 tests passing offline (685 + 14 new), same 19
+pre-existing unrelated failures. Full account in `DEVIATIONS.md` #198.
+
+**Restructured to the operator's own hierarchy (2026-09-23), superseding
+#198.** Operator supplied a full nested-tree spec: Level 3 is "really a
+weighted rank fusion-weight ablation" — one continuous sweep,
+`w_BM25 ∈ {0.0, 0.1, ..., 1.0}` (11 points), BM25 vs. SapBERT only.
+**MedCPT and RRF (the #198 addendum) are both dropped entirely** — that
+code was removed, not deprecated in place. Primary metric changed from
+MRR@K to **Recall@K** (K still config-driven, 2–20 step 2 default; MRR@K
+kept as a secondary metric). `alpha` renamed to `bm25_weight` throughout
+(config, per-query schema, CLI flag). `ALL_ARMS` shrank from 28 to 4 (2
+Level-1 × 2 Level-2 × 1 Level-3 identity, swept uniformly across the
+weight grid) — the whole "does this arm even have a weight dimension"
+branching the RRF/MedCPT era needed is gone, since every arm now sweeps
+the same grid. The combined report is back to 3 panels; Panel C is
+redesigned from a point-with-CI comparison into a real line chart (BM25
+weight on x, recall@k on y, one line per Level-1×Level-2 slice) — found
+and fixed a real layout bug live (the first version's legend and
+4-line endpoint-delta annotation ran off the image edge; caught by
+reading the rendered PNG back, not just trusting a successful render
+call). 695 tests passing offline (net fewer than #198 — more
+MedCPT/RRF-specific tests were deleted than recall/weight ones were
+added, matching the code they tested), same 19 pre-existing unrelated
+failures. Live-smoke-tested against the real corpus (confirmed no MedCPT
+encoder ever loads). Full account in `DEVIATIONS.md` #201.
 
 ### Repository layout
 
@@ -1035,6 +1105,10 @@ backend/
   scripts/          generate_synthetic_records (--domain), prepare_sample_guidelines,
                     ingest_deidentified_records, seed_db
   tests/            offline tests + fixtures/guidelines/ (CI-only synthetic set)
+  results/ablation/ unified-ablation run output, one dir per <run_id>:
+                    configuration.json (reproducibility snapshot) +
+                    per_query_results.jsonl (file-based, not Postgres —
+                    PRD-112/ARCH-043); gitignored except this note + .gitkeep
 frontend/           Vite + React + TS: LoginPage, QueryPage, ReviewPage (rank
                     mode), EscalationsPage (standalone accept axis),
                     components/, api/client.ts, auth.ts
@@ -1044,10 +1118,6 @@ data/               record_schema.json; clinical_concepts.yaml (SCOPE-2.6
                     (+ manifest, source_pages-attested extracts); guideline_sources/
                     (archival full originals, never ingested); patient_records/
                     {synthetic,deidentified/<dataset>}/
-results/ablation/   unified-ablation run output, one dir per <run_id>:
-                    configuration.json (reproducibility snapshot) +
-                    per_query_results.jsonl (file-based, not Postgres —
-                    PRD-112/ARCH-043)
 ```
 
 ---
@@ -1187,7 +1257,7 @@ cd ../frontend && npm install && npm run dev
 | `make retrieval-tuning-report` | Phase 6 BM25/vector weight × depth sweep → 1 combined 3-panel PNG report, 18cm×21cm @ 600dpi (PRD-109/ARCH-040); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra (`pip install -e .[retrieval-tuning]`) |
 | `make model-ablation-report` | SapBERT/MedCPT/BM25 embedding ablation → 1 combined 2-panel PNG report (PRD-110/ARCH-041); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and `MODEL_ABLATION_BACKEND=local` for real (non-stub) models |
 | `make orchestration-ablation-report` | Phase 7 single-stage/criteria-reuse/operator-vocabulary orchestration ablation → 1 combined 3-panel PNG report (PRD-111); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, and the `retrieval-tuning` extra; the operator-vocabulary arm additionally needs an attested `data/clinical_concepts.yaml` |
-| `make unified-ablation-report` | Phase 8 unified Level 1 × 2 × 3 hierarchical ablation (16 leaf arms × alpha × K) → `results/ablation/<run_id>/` + 1 combined 3-panel PNG report (PRD-112/ARCH-043); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and an attested `data/clinical_concepts.yaml` for Level 2 enrichment |
+| `make unified-ablation-report` | Phase 8 unified Level 1 × 2 × 3 hierarchical ablation (BM25/SapBERT weighted-rank-fusion sweep, 11 weight points × K, primary metric Recall@K) → `results/ablation/<run_id>/` + 1 combined 3-panel PNG report (PRD-112/ARCH-043); needs a real Qdrant + Postgres with an ingested corpus and seeded eval questions, the `retrieval-tuning` + `local-models` extras, and an attested `data/clinical_concepts.yaml` for Level 2 enrichment |
 
 ---
 

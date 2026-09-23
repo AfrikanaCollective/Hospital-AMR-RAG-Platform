@@ -1,19 +1,28 @@
-"""Pure aggregation over `PerQueryResult` rows into the three statistical
+"""Pure aggregation over `PerQueryResult` rows into the statistical
 comparisons requirement XII asks for (UNIFIED-ABLATION-PROPOSAL.md §3.7,
-§4 points 4/5): Level 1 (present-only vs. all-assessed), Level 2 (enriched
-vs. raw, within each Level 1), Level 3 (each dense-bearing arm vs. `bm25`,
-within each Level 1 x Level 2). No I/O — offline-testable on a plain list
-of `PerQueryResult`, mirroring every other pure-compute layer already in
-this codebase (CLAUDE.md §5).
+§4 points 4/5, §12): Level 1 (present-only vs. all-assessed), Level 2
+(enriched vs. raw, within each Level 1), Level 3 (recall@k as a function
+of `bm25_weight`, the continuous BM25/SapBERT weighted-rank-fusion sweep).
+No I/O — offline-testable on a plain list of `PerQueryResult`, mirroring
+every other pure-compute layer already in this codebase (CLAUDE.md §5).
+
+**Restructured 2026-09-23** (operator request, DEVIATIONS.md #201): the
+primary metric is now recall@k (`PerQueryResult.recall_at_k`), not MRR@k
+— `per_query_scores`/every `summarize_*` function takes a `metric`
+selector (`"recall"` default, `"mrr"` for the still-available secondary
+view, reading `reciprocal_rank_at_k`). Level 3's old "each arm vs. `bm25`"
+comparison (`summarize_level3`) and the RRF-vs-alpha-blend mechanism
+comparison (`summarize_level3_mechanism`, proposal §11) are both removed
+— MedCPT and RRF fusion are dropped entirely, and Level 3 is no longer a
+set of named arms to compare, it's one continuous curve over
+`bm25_weight`. `summarize_level3_curve` replaces both.
 
 Pooling convention (proposal §4 point 4, extended consistently to every
 comparison here — a judgment call, flagged): a comparison names the
-condition(s) it varies; every OTHER free dimension (the remaining
-level/alpha) is marginalized by averaging a query's `reciprocal_rank_at_k`
-across it first, so each query contributes exactly one scalar score per
-side of the comparison — never 16+ separate headline numbers, and never a
-query silently overrepresented because it happened to fire on more rows.
-`k` is always fixed to one caller-supplied value (typically
+condition(s) it varies; every OTHER free dimension is marginalized by
+averaging a query's metric value across it first, so each query
+contributes exactly one scalar score per side of the comparison. `k` is
+always fixed to one caller-supplied value (typically
 `app.eval.ablation_config.mrr_k()`), never pooled across k.
 """
 
@@ -21,14 +30,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
-from app.eval.ablation_config import Level1Condition, Level2Condition, Level3Condition
+from app.eval.ablation_config import Level1Condition, Level2Condition
 from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED, bootstrap_ci, paired_bootstrap_ci_delta
 from app.eval.unified_ablation.per_query import PerQueryResult
 
-BM25_REFERENCE: Level3Condition = "bm25"
+Metric = Literal["recall", "mrr"]
+
+
+def _metric_value(row: PerQueryResult, metric: Metric) -> float:
+    return row.recall_at_k if metric == "recall" else row.reciprocal_rank_at_k
 
 
 @dataclass(frozen=True)
@@ -58,13 +72,14 @@ def per_query_scores(
     rows: list[PerQueryResult],
     *,
     k: int,
+    metric: Metric = "recall",
     level1: Level1Condition | None = None,
     level2: Level2Condition | None = None,
-    level3: Level3Condition | None = None,
+    bm25_weight: float | None = None,
 ) -> dict[str, float]:
-    """One score per `query_id`: the mean `reciprocal_rank_at_k` over every
-    row at this `k` matching the given filters — `None` leaves that
-    dimension free (pooled/marginalized), a value pins it."""
+    """One score per `query_id`: the mean of `metric` over every row at
+    this `k` matching the given filters — `None` leaves that dimension
+    free (pooled/marginalized), a value pins it."""
     buckets: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         if row.k != k:
@@ -73,9 +88,9 @@ def per_query_scores(
             continue
         if level2 is not None and row.level2_condition != level2:
             continue
-        if level3 is not None and row.level3_condition != level3:
+        if bm25_weight is not None and row.bm25_weight != bm25_weight:
             continue
-        buckets[row.query_id].append(row.reciprocal_rank_at_k)
+        buckets[row.query_id].append(_metric_value(row, metric))
     return {qid: float(np.mean(scores)) for qid, scores in buckets.items()}
 
 
@@ -117,13 +132,17 @@ class Level1Summary:
 
 
 def summarize_level1(
-    rows: list[PerQueryResult], *, k: int, seed: int = DEFAULT_BOOTSTRAP_SEED
+    rows: list[PerQueryResult],
+    *,
+    k: int,
+    metric: Metric = "recall",
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> Level1Summary:
-    """Present-only vs. all-assessed, pooled over Level 2 x Level 3 x alpha
+    """Present-only vs. all-assessed, pooled over Level 2 x bm25_weight
     (proposal §3.7 item 1, §4 point 4)."""
     rng = np.random.default_rng(seed)
-    present = per_query_scores(rows, k=k, level1="present_only")
-    assessed = per_query_scores(rows, k=k, level1="all_assessed")
+    present = per_query_scores(rows, k=k, metric=metric, level1="present_only")
+    assessed = per_query_scores(rows, k=k, metric=metric, level1="all_assessed")
     return Level1Summary(
         present_only=_arm_score("present_only", present, rng=rng),
         all_assessed=_arm_score("all_assessed", assessed, rng=rng),
@@ -140,15 +159,19 @@ class Level2Summary:
 
 
 def summarize_level2(
-    rows: list[PerQueryResult], *, k: int, seed: int = DEFAULT_BOOTSTRAP_SEED
+    rows: list[PerQueryResult],
+    *,
+    k: int,
+    metric: Metric = "recall",
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> dict[Level1Condition, Level2Summary]:
     """Enriched vs. raw, WITHIN each Level 1 condition (proposal §3.7 item
-    2), pooled over Level 3 x alpha."""
+    2), pooled over bm25_weight."""
     rng = np.random.default_rng(seed)
     out: dict[Level1Condition, Level2Summary] = {}
     for level1 in ("present_only", "all_assessed"):
-        raw = per_query_scores(rows, k=k, level1=level1, level2="raw")
-        enriched = per_query_scores(rows, k=k, level1=level1, level2="enriched")
+        raw = per_query_scores(rows, k=k, metric=metric, level1=level1, level2="raw")
+        enriched = per_query_scores(rows, k=k, metric=metric, level1=level1, level2="enriched")
         out[level1] = Level2Summary(
             level1=level1,
             raw=_arm_score(f"{level1}/raw", raw, rng=rng),
@@ -159,50 +182,73 @@ def summarize_level2(
 
 
 @dataclass(frozen=True)
-class Level3Summary:
+class Level3CurvePoint:
+    bm25_weight: float
+    score: ArmScore
+
+
+@dataclass(frozen=True)
+class Level3Curve:
+    """One (Level 1, Level 2) slice's recall@k-vs-bm25_weight curve, plus
+    the paired delta between the sweep's two endpoints — `bm25_weight=0.0`
+    (pure SapBERT) vs. `bm25_weight=1.0` (pure BM25) — as the headline
+    comparison, matching the paired-delta convention every other level in
+    this module already uses."""
+
     level1: Level1Condition
     level2: Level2Condition
-    level3: Level3Condition
-    reference: ArmScore  # bm25, same L1 x L2 slice
-    arm: ArmScore  # the dense-bearing arm, pooled over its own alpha sweep
-    delta: DeltaScore  # arm - reference
+    points: list[Level3CurvePoint]  # ordered by bm25_weight, ascending
+    endpoints_delta: DeltaScore  # bm25_weight=1.0 (BM25) - bm25_weight=0.0 (SapBERT)
 
 
-def summarize_level3(
-    rows: list[PerQueryResult], *, k: int, seed: int = DEFAULT_BOOTSTRAP_SEED
-) -> list[Level3Summary]:
-    """Each dense-bearing arm vs. `bm25`, WITHIN each Level 1 x Level 2
-    slice (proposal §3.7 item 3) — 3 dense arms x 2 L1 x 2 L2 = 12
-    comparisons, not all-pairwise (proposal §4 point 5). Each arm's own
-    alpha sweep is pooled into one score per query, extending point 4's
-    pooling principle to alpha — a judgment call, flagged (DEVIATIONS.md
-    #192): the full per-alpha detail survives in `per_query_results.jsonl`
-    for anyone who wants to slice further."""
+def summarize_level3_curve(
+    rows: list[PerQueryResult],
+    *,
+    k: int,
+    weight_values: tuple[float, ...],
+    metric: Metric = "recall",
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> list[Level3Curve]:
+    """recall@k (or MRR@k) as a function of `bm25_weight`, one curve per
+    Level 1 x Level 2 slice (4 total) — the weighted-rank-fusion sweep
+    itself, not a fixed set of named arms to compare (DEVIATIONS.md #201).
+    `weight_values` is caller-supplied (`app.eval.ablation_config
+    .bm25_weight_values()`), never hardcoded."""
     rng = np.random.default_rng(seed)
-    out: list[Level3Summary] = []
+    out: list[Level3Curve] = []
     for level1 in ("present_only", "all_assessed"):
         for level2 in ("raw", "enriched"):
-            reference = per_query_scores(
-                rows, k=k, level1=level1, level2=level2, level3=BM25_REFERENCE
-            )
-            for level3 in ("bm25_sapbert", "bm25_medcpt", "bm25_sapbert_medcpt"):
-                arm = per_query_scores(rows, k=k, level1=level1, level2=level2, level3=level3)
-                out.append(
-                    Level3Summary(
-                        level1=level1,
-                        level2=level2,
-                        level3=level3,
-                        reference=_arm_score(
-                            f"{level1}/{level2}/{BM25_REFERENCE}", reference, rng=rng
+            points = [
+                Level3CurvePoint(
+                    bm25_weight=w,
+                    score=_arm_score(
+                        f"{level1}/{level2}/w={w}",
+                        per_query_scores(
+                            rows, k=k, metric=metric, level1=level1, level2=level2, bm25_weight=w
                         ),
-                        arm=_arm_score(f"{level1}/{level2}/{level3}", arm, rng=rng),
-                        delta=_delta_score(
-                            f"{level1}/{level2}/{level3}",
-                            f"{level1}/{level2}/{BM25_REFERENCE}",
-                            arm,
-                            reference,
-                            rng=rng,
-                        ),
-                    )
+                        rng=rng,
+                    ),
                 )
+                for w in weight_values
+            ]
+            sapbert_only = per_query_scores(
+                rows, k=k, metric=metric, level1=level1, level2=level2, bm25_weight=0.0
+            )
+            bm25_only = per_query_scores(
+                rows, k=k, metric=metric, level1=level1, level2=level2, bm25_weight=1.0
+            )
+            out.append(
+                Level3Curve(
+                    level1=level1,
+                    level2=level2,
+                    points=points,
+                    endpoints_delta=_delta_score(
+                        f"{level1}/{level2}/bm25_weight=1.0",
+                        f"{level1}/{level2}/bm25_weight=0.0",
+                        bm25_only,
+                        sapbert_only,
+                        rng=rng,
+                    ),
+                )
+            )
     return out

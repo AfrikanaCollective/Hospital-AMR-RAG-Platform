@@ -1,7 +1,17 @@
 """Auto-seed the rubric review queue from de-identified records
-(ARCH §14.2, §15; DEVIATIONS.md #113).
+(ARCH §14.2, §15; DEVIATIONS.md #113) — and, since DEVIATIONS.md #199,
+a second, review-queue-FREE sibling pipeline
+(`run_ablation_holdout_generation`) that generates `EvalQuestion` rows
+for the unified ablation study's own calibration pool only (PRD-112 /
+ARCH-043) without ever writing a `Result`/making anything reviewer-visible.
+The two share almost every building block below (record loading, the
+deterministic narrative, the diversity filter, the real pipeline
+invocation, and — load-bearingly — the same `_used_patient_ids` exclusion
+check, which is what keeps a record consumed by one pipeline from ever
+being drawn by the other) but write to different places; see
+`run_ablation_holdout_generation`'s own docstring for what's different.
 
-Wires together, end to end:
+`run_auto_seed_review_queue` wires together, end to end:
 1. `app.eval.deidentified_source.load_deidentified_records` — already-ingested
    de-identified patient records (never synthetic ones — this pipeline is
    specifically "from the existing de-identified anonymised patient-level
@@ -212,6 +222,35 @@ def _count_existing_auto_seeded(session: Session) -> int:
 
 
 _COUNT_EXISTING_AUTO_SEEDED_FN = _count_existing_auto_seeded
+
+
+def _count_existing_ablation_holdout(session: Session) -> int:
+    """Counts only `EvalQuestion` rows this pipeline itself created --
+    filtered on `generator_meta.purpose == "ablation_holdout"`
+    (DEVIATIONS.md #199), not merely "has no `Result`". An earlier version
+    of this function used an outerjoin-to-`Result`/`Result.id.is_(None)`
+    check instead, on the assumption that an ablation-holdout row was the
+    only kind of `auto_generated` `EvalQuestion` with no paired `Result` --
+    live-checked against the real database before this function was ever
+    used for real and found **wrong**: `app.eval.tasks`'s own separate
+    fixed-synthetic-test-set generator (`in_fixed_testset=True`) also
+    writes `auto_generated` questions with no `Result` (its own module
+    docstring already says so, in a sentence this function's author missed
+    on the first pass) -- the join-based count would have started at
+    whatever that harness's own row count happened to be, not 0. Fixed
+    before any real generation ran against it."""
+    stmt = (
+        select(func.count())
+        .select_from(EvalQuestion)
+        .where(
+            EvalQuestion.provenance == Provenance.AUTO_GENERATED.value,
+            EvalQuestion.generator_meta["purpose"].astext == "ablation_holdout",
+        )
+    )
+    return session.execute(stmt).scalar_one()
+
+
+_COUNT_EXISTING_ABLATION_HOLDOUT_FN = _count_existing_ablation_holdout
 
 
 def _used_patient_ids(session: Session) -> set[uuid.UUID]:
@@ -472,6 +511,90 @@ def _generate_one_scenario(
     return result.id
 
 
+def _generate_one_ablation_question(
+    session: Session,
+    state: _GenerationState,
+    *,
+    dedup_threshold: float,
+) -> uuid.UUID | None:
+    """The ablation-holdout sibling of `_generate_one_scenario`
+    (DEVIATIONS.md #199, `UNIFIED-ABLATION-PROPOSAL.md`; operator request
+    2026-09-23): same candidate-pick / narrative / diversity-filter /
+    real-pipeline steps, but writes ONLY an `EvalQuestion` row -- no
+    `Result`, no review-queue visibility, no multi-stage audit fields
+    (those are a review-queue feature; the ablation study only ever reads
+    `EvalQuestion.text`/`gold_relevant_chunks`, never `Result`).
+
+    Always targets `WELL_SUPPORTED` -- unlike the review queue, which needs
+    a 60/20/20 composition for reviewer-facing diversity, the ablation
+    study only ever consumes `well_supported` rows with a non-empty
+    `gold_relevant_chunks` set (`fetch_calibration_questions`); requesting
+    any other expected-outcome slot here would only spend a real pipeline
+    call on a row the ablation can never use. A `well_supported`-targeted
+    attempt can still turn out empty (the pipeline may escalate or find no
+    guideline for a given record's real content, same as the review queue's
+    own `well_supported` slots can) -- `gold_relevant_chunks` is left unset
+    in that case, exactly like `_generate_one_scenario`, and
+    `fetch_calibration_questions` already filters those out.
+
+    Reuses `is_clinically_near_duplicate`/`state.accepted_records` (a
+    judgment call, flagged: not explicitly requested for this path, but
+    free to reuse and avoids spending a real gateway call generating a
+    calibration question that clinically duplicates one already in the
+    pool) and the SAME `_GenerationState`/candidate-pool machinery
+    `_generate_one_scenario` uses -- a record consumed here becomes
+    ineligible for the review queue's own `run_auto_seed_review_queue` (and
+    vice versa) for free, via the shared `_used_patient_ids` exclusion
+    check both pipelines already read (any `auto_generated` `EvalQuestion`
+    row's `source_record_id`, regardless of whether it has a `Result`)."""
+    candidate = state.next_candidate()
+    if candidate is None:
+        return None
+    patient_id, record = candidate
+    text = build_deterministic_narrative(record, topic=_TOPIC)
+
+    if is_clinically_near_duplicate(
+        record, state.accepted_records, findings_jaccard_threshold=dedup_threshold
+    ):
+        return None
+
+    try:
+        out = _INVOKE_PIPELINE_FN(text)
+    except (httpx.HTTPError, LLMGatewayError) as exc:
+        logger.warning(
+            "ablation_holdout_generation: transient gateway error running the pipeline for "
+            "record %r, skipping this attempt: %s",
+            patient_id,
+            exc,
+        )
+        return None
+
+    state.accepted_records.append(record)
+    state.used_this_run.add(patient_id)
+
+    question = EvalQuestion(
+        text=text,
+        provenance=Provenance.AUTO_GENERATED,
+        expected_outcome=ExpectedOutcome.WELL_SUPPORTED,
+        source_record_id=patient_id,
+        target_guideline_ref={"topic": _TOPIC},
+        generator_meta={"template_version": "deterministic-v1", "purpose": "ablation_holdout"},
+        in_fixed_testset=False,
+    )
+    session.add(question)
+    session.flush()
+
+    _, citations, _ = _extract_answer_parts(out)
+    if citations:
+        question.gold_relevant_chunks = sorted({c["chunk_id"] for c in citations})
+
+    # Commit per scenario -- same crash-resilience rationale as
+    # `_generate_one_scenario` (DEVIATIONS.md #115), doubly so here: a real
+    # run targets thousands of records, not dozens.
+    session.commit()
+    return question.id
+
+
 def _invoke_pipeline(question_text: str) -> dict:
     # Lazy import: app.agents.graph_runtime pulls in every agent module at
     # import time — a real cost worth avoiding for callers (most tests) that
@@ -690,4 +813,94 @@ def run_auto_seed_review_queue(
             )
 
     logger.info("auto_seed_review_queue: created %d new review-queue result(s)", len(created))
+    return created
+
+
+def run_ablation_holdout_generation(
+    session: Session,
+    *,
+    target_count: int,
+    dataset_id: str | None = None,
+    seed: int | None = None,
+) -> list[uuid.UUID]:
+    """Top up the ablation-only `EvalQuestion` pool to `target_count`
+    (DEVIATIONS.md #199, `UNIFIED-ABLATION-PROPOSAL.md`; operator request
+    2026-09-23 — `settings.ablation_holdout_target_count`, never
+    hardcoded). Mirrors `run_auto_seed_review_queue`'s own top-up /
+    candidate-pool / per-scenario-commit structure, but:
+
+    - writes ONLY `EvalQuestion` rows, never a `Result` — these records are
+      never visible in the clinician review queue;
+    - always targets `WELL_SUPPORTED` (no 60/20/20 composition — the
+      ablation study never consumes the other two expected-outcome
+      classes, so there is no reason to spend a real pipeline call
+      generating one);
+    - has no multi-stage audit fields (a review-queue-only feature).
+
+    Records used here are excluded from `run_auto_seed_review_queue` (and
+    vice versa) automatically — both read `_used_patient_ids`, which scans
+    every `auto_generated` `EvalQuestion.source_record_id` regardless of
+    whether a `Result` exists. **A de-identified record consumed by this
+    function is therefore never reused by any other task** (operator
+    requirement) without any new column, table, or per-record marker."""
+    already = _COUNT_EXISTING_ABLATION_HOLDOUT_FN(session)
+    remaining = target_count - already
+    if remaining <= 0:
+        logger.info(
+            "ablation_holdout_generation: already have %d ablation-holdout question(s) "
+            "(target %d); nothing to do",
+            already,
+            target_count,
+        )
+        return []
+
+    records = _LOAD_RECORDS_FN(session, dataset_id=dataset_id)
+    if not records:
+        logger.warning(
+            "ablation_holdout_generation: no de-identified records found (dataset_id=%r); "
+            "skipping. Ingest more first: python -m scripts.ingest_deidentified_records "
+            "--attest-deidentified --persist --limit <n>",
+            dataset_id,
+        )
+        return []
+
+    used_ids = _USED_PATIENT_IDS_FN(session)
+    unused_records = [r for r in records if r[0] not in used_ids]
+    if not unused_records:
+        logger.warning(
+            "ablation_holdout_generation: all %d loaded de-identified record(s) already have "
+            "an auto-generated scenario (one scenario per record, shared with the review "
+            "queue); skipping",
+            len(records),
+        )
+        return []
+
+    settings = get_settings()
+    state = _GenerationState(
+        unused_records, seed=seed, existing_records=_EXISTING_RECORDS_FN(session)
+    )
+    created: list[uuid.UUID] = []
+    attempts = 0
+    max_attempts = max(_MIN_ATTEMPTS_PER_SLOT, remaining * _ATTEMPTS_PER_SLOT_MULTIPLIER)
+    while len(created) < remaining and attempts < max_attempts:
+        attempts += 1
+        question_id = _generate_one_ablation_question(
+            session, state, dedup_threshold=settings.qgen_dedup_threshold
+        )
+        if question_id is not None:
+            created.append(question_id)
+
+    if len(created) < remaining:
+        logger.warning(
+            "ablation_holdout_generation: only generated %d/%d question(s) within %d attempts "
+            "(%d unused de-identified record(s) available)",
+            len(created),
+            remaining,
+            max_attempts,
+            len(unused_records),
+        )
+
+    logger.info(
+        "ablation_holdout_generation: created %d new ablation-holdout question(s)", len(created)
+    )
     return created

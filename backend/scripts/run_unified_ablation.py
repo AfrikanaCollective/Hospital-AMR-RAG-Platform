@@ -1,15 +1,19 @@
 """CLI: python -m scripts.run_unified_ablation [--out-dir DIR]
-[--concepts-path PATH] [--k-values 2,4,...,20] [--alpha-values 0.0,...,1.0]
-[--run-id ID] [--results-root DIR] (PRD-112 / ARCH-043;
-UNIFIED-ABLATION-PROPOSAL.md §3.9; Makefile `make unified-ablation-report`).
+[--concepts-path PATH] [--k-values 2,4,...,20]
+[--bm25-weight-values 0.0,...,1.0] [--run-id ID] [--results-root DIR]
+(PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §3.9, §12; Makefile
+`make unified-ablation-report`).
 
-Runs the 16-arm x alpha x K sweep (`app.eval.unified_ablation.runner`)
-against the real Qdrant guideline collection and the real
-`eval.eval_question` table, writes the per-query results and a
-reproducibility snapshot to `results/ablation/<run_id>/` (operator-specified
-layout, DEVIATIONS.md #192), computes the three Level 1/2/3 statistical
-comparisons (`app.eval.unified_ablation.summary`), and renders the combined
-3-panel PNG report alongside them in the same run directory.
+Runs the Level-1 x Level-2 x bm25_weight x K sweep
+(`app.eval.unified_ablation.runner`) — Level 3 is a single continuous
+BM25/SapBERT weighted-rank-fusion sweep (MedCPT and RRF fusion dropped
+entirely, DEVIATIONS.md #201) — against the real Qdrant guideline
+collection and the real `eval.eval_question` table, writes the per-query
+results and a reproducibility snapshot to `results/ablation/<run_id>/`
+(operator-specified layout, DEVIATIONS.md #192), computes the three
+Level 1/2/3 statistical comparisons (`app.eval.unified_ablation.summary`,
+primary metric recall@k), and renders the combined 3-panel PNG report
+alongside them in the same run directory.
 
 Needs a real Postgres + Qdrant with an already-ingested guideline corpus and
 an already-seeded auto-generated question set — not runnable against
@@ -17,7 +21,7 @@ an already-seeded auto-generated question set — not runnable against
 covers instead (CLAUDE.md §5). Requires the `retrieval-tuning` optional
 extra (seaborn/pandas/matplotlib) and, for a real (non-stub) run,
 `MODEL_ABLATION_BACKEND=local` plus the `local-models` extra
-(sentence-transformers/torch, for SapBERT/MedCPT) — same conventions as
+(sentence-transformers/torch, for SapBERT) — same conventions as
 `run_model_ablation.py`.
 
 **Level 2's vocabulary enrichment requires `data/clinical_concepts.yaml` to
@@ -39,7 +43,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.db.session import session_scope
-from app.eval.ablation_config import alpha_values, k_values, mrr_k
+from app.eval.ablation_config import bm25_weight_values, k_values, mrr_k
 from app.eval.bootstrap import DEFAULT_BOOTSTRAP_SEED
 from app.eval.orchestration_ablation.ablation import load_attested_vocabulary
 from app.eval.unified_ablation.per_query import (
@@ -49,7 +53,11 @@ from app.eval.unified_ablation.per_query import (
 )
 from app.eval.unified_ablation.report import generate_report
 from app.eval.unified_ablation.runner import run_unified_ablation
-from app.eval.unified_ablation.summary import summarize_level1, summarize_level2, summarize_level3
+from app.eval.unified_ablation.summary import (
+    summarize_level1,
+    summarize_level2,
+    summarize_level3_curve,
+)
 from app.retrieval.vectorstore import QdrantVectorStore
 
 _DEFAULT_CONCEPTS_PATH = Path(
@@ -62,9 +70,9 @@ _DEFAULT_RESULTS_ROOT = Path(os.environ.get("UNIFIED_ABLATION_RESULTS_ROOT", "re
 
 
 def _parse_values(raw: str | None, *, env_var: str) -> None:
-    """Overrides the settings-driven K/alpha grid for this process only, via
-    the same env var `app.config.Settings` already reads — not a second,
-    competing source of truth (proposal §3.6: "never hardcoded")."""
+    """Overrides the settings-driven K/bm25_weight grid for this process
+    only, via the same env var `app.config.Settings` already reads — not a
+    second, competing source of truth (proposal §3.6: "never hardcoded")."""
     if raw is not None:
         os.environ[env_var] = raw
 
@@ -77,23 +85,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concepts-path", type=Path, default=_DEFAULT_CONCEPTS_PATH)
     parser.add_argument("--k-values", type=str, default=None, help="comma-separated, e.g. 2,4,6")
     parser.add_argument(
-        "--alpha-values", type=str, default=None, help="comma-separated, e.g. 0.0,0.5,1.0"
+        "--bm25-weight-values", type=str, default=None, help="comma-separated, e.g. 0.0,0.5,1.0"
     )
     parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--results-root", type=Path, default=_DEFAULT_RESULTS_ROOT)
     args = parser.parse_args(argv)
 
     _parse_values(args.k_values, env_var="ABLATION_K_VALUES")
-    _parse_values(args.alpha_values, env_var="ABLATION_ALPHA_VALUES")
-    if args.k_values is not None or args.alpha_values is not None:
+    _parse_values(args.bm25_weight_values, env_var="ABLATION_BM25_WEIGHT_VALUES")
+    if args.k_values is not None or args.bm25_weight_values is not None:
         get_settings.cache_clear()
 
     settings = get_settings()
     if settings.model_ablation_backend == "stub":
         print(
             "[unified-ablation] MODEL_ABLATION_BACKEND=stub — using deterministic fake "
-            "embeddings, not real SapBERT/MedCPT. Set MODEL_ABLATION_BACKEND=local for "
-            "a real run.",
+            "embeddings, not real SapBERT. Set MODEL_ABLATION_BACKEND=local for a real run.",
             file=sys.stderr,
         )
 
@@ -134,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"[unified-ablation] {len(rows)} per-query-result row(s) across {len(k_values())} "
-        f"k value(s) and {len(alpha_values())} alpha value(s)..."
+        f"k value(s) and {len(bm25_weight_values())} bm25_weight value(s)..."
     )
 
     write_per_query_results(run_dir, rows)
@@ -146,13 +153,11 @@ def main(argv: list[str] | None = None) -> int:
             "timestamp": datetime.now(UTC).isoformat(),
             "seed": DEFAULT_BOOTSTRAP_SEED,
             "k_values": list(k_values()),
-            "alpha_values": list(alpha_values()),
+            "bm25_weight_values": list(bm25_weight_values()),
             "mrr_k": mrr_k(),
+            "primary_metric": "recall_at_k",
             "sapbert_model_id": settings.sapbert_model_id,
             "sapbert_model_verified": settings.sapbert_model_verified,
-            "medcpt_query_model_id": settings.medcpt_query_model_id,
-            "medcpt_article_model_id": settings.medcpt_article_model_id,
-            "medcpt_model_verified": settings.medcpt_model_verified,
             "retrieval_depth": "full_corpus_brute_force",  # no ANN/candidate-depth truncation
             "template_version": {
                 "all_assessed": "deterministic-v1",
@@ -171,22 +176,23 @@ def main(argv: list[str] | None = None) -> int:
     k = mrr_k()
     l1 = summarize_level1(rows, k=k)
     l2 = summarize_level2(rows, k=k)
-    l3 = summarize_level3(rows, k=k)
+    l3 = summarize_level3_curve(rows, k=k, weight_values=bm25_weight_values())
     print(
-        f"[unified-ablation] Level 1 delta (present-only - all-assessed) MRR@{k}: "
+        f"[unified-ablation] Level 1 delta (present-only - all-assessed) Recall@{k}: "
         f"{l1.delta.mean_delta:+.3f} [{l1.delta.ci_low:+.3f}, {l1.delta.ci_high:+.3f}]"
     )
     for level1, l2_summary in l2.items():
         print(
-            f"[unified-ablation] Level 2 delta ({level1}, enriched - raw) MRR@{k}: "
+            f"[unified-ablation] Level 2 delta ({level1}, enriched - raw) Recall@{k}: "
             f"{l2_summary.delta.mean_delta:+.3f} "
             f"[{l2_summary.delta.ci_low:+.3f}, {l2_summary.delta.ci_high:+.3f}]"
         )
-    for l3_summary in l3:
+    for curve in l3:
+        d = curve.endpoints_delta
         print(
-            f"[unified-ablation] Level 3 delta ({l3_summary.level1}/{l3_summary.level2}, "
-            f"{l3_summary.level3} - bm25) MRR@{k}: {l3_summary.delta.mean_delta:+.3f} "
-            f"[{l3_summary.delta.ci_low:+.3f}, {l3_summary.delta.ci_high:+.3f}]"
+            f"[unified-ablation] Level 3 delta ({curve.level1}/{curve.level2}, "
+            f"bm25_weight=1.0 - bm25_weight=0.0) Recall@{k}: {d.mean_delta:+.3f} "
+            f"[{d.ci_low:+.3f}, {d.ci_high:+.3f}]"
         )
 
     report_path = generate_report(l1, l2, l3, k=k, out_dir=out_dir)

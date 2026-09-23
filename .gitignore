@@ -70,3 +70,11 @@ npm-debug.log*
 # generated CI-only synthetic guideline fixtures (DEVIATIONS #26)
 backend/tests/fixtures/guidelines/*
 !backend/tests/fixtures/guidelines/.gitkeep
+
+# --- unified-ablation run output (PRD-112/ARCH-043) — per-query JSONL can run
+#     into the hundreds of MB per run (real run, DEVIATIONS #197: 472MB/180,880
+#     rows for one 238-question run); never commit a run's raw output, only
+#     its own README explaining the layout ---
+backend/results/ablation/*
+!backend/results/ablation/.gitkeep
+!backend/results/ablation/README.md

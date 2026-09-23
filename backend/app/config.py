@@ -233,16 +233,30 @@ class Settings(BaseSettings):
     local_adaptation_enabled: bool = Field(default=False)
 
     # ── unified hierarchical ablation (PRD-112 / ARCH-043) ──
-    # K and alpha are never hardcoded (UNIFIED-ABLATION-PROPOSAL.md §3.6) --
-    # one shared source, comma-parsed the same way QGEN_COMPOSITION already
-    # is. `model_ablation`/`retrieval_tuning`/`orchestration_ablation` keep
-    # their own independent K_VALUES/MRR_K constants for now (not silently
-    # migrated in this phase, proposal §8) -- only the new
+    # K and the BM25 weight are never hardcoded (UNIFIED-ABLATION-PROPOSAL.md
+    # §3.6) -- one shared source, comma-parsed the same way QGEN_COMPOSITION
+    # already is. `model_ablation`/`retrieval_tuning`/`orchestration_ablation`
+    # keep their own independent K_VALUES/MRR_K constants for now (not
+    # silently migrated in this phase, proposal §8) -- only the new
     # `app.eval.unified_ablation` package and `app.eval.ablation_config`
     # read these.
     ablation_k_values: str = "2,4,6,8,10,12,14,16,18,20"  # 2..20 step 2
-    ablation_alpha_values: str = "0.0,0.2,0.4,0.6,0.8,1.0"  # 0..1 step 0.2
+    # Renamed from `ablation_alpha_values`/`ABLATION_ALPHA_VALUES` (operator
+    # request 2026-09-23, DEVIATIONS.md #201: "alpha" -> "weighted rank",
+    # w_BM25) -- 11 points at 0.1 granularity, up from 6 at 0.2 (the old
+    # default). Level 3 is now a single BM25/SapBERT weighted-rank-fusion
+    # sweep (MedCPT and RRF fusion dropped entirely, not just excluded).
+    ablation_bm25_weight_values: str = "0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
     ablation_mrr_k: int = 12  # matches retrieval_tuning.sweep's settled value (DEVIATIONS #183)
+    # Target count for `app.eval.auto_seed.run_ablation_holdout_generation`
+    # (DEVIATIONS.md #199, operator request 2026-09-23) -- a de-identified
+    # record used here is durably excluded from every other consumer of the
+    # same auto-generated-question pool (the rubric review queue included),
+    # via the same `EvalQuestion.provenance`+`source_record_id` exclusion
+    # check `run_auto_seed_review_queue` already uses (`_used_patient_ids`,
+    # DEVIATIONS #114) -- never hardcoded, top-up semantics matching
+    # `qgen_auto_seed_count`'s own convention.
+    ablation_holdout_target_count: int = 10_000
 
     # ── derived ──
     @property
@@ -261,8 +275,8 @@ class Settings(BaseSettings):
         return tuple(int(x) for x in self.ablation_k_values.split(",") if x.strip())
 
     @property
-    def ablation_alpha_values_tuple(self) -> tuple[float, ...]:
-        return tuple(float(x) for x in self.ablation_alpha_values.split(",") if x.strip())
+    def ablation_bm25_weight_values_tuple(self) -> tuple[float, ...]:
+        return tuple(float(x) for x in self.ablation_bm25_weight_values.split(",") if x.strip())
 
     def is_model_placeholder(self) -> bool:
         return self.model_id.strip() in ("", PLACEHOLDER_MODEL_ID)

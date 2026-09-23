@@ -1,19 +1,25 @@
-"""The 16-arm x alpha x K sweep (UNIFIED-ABLATION-PROPOSAL.md §3, §6;
-PRD-112 / ARCH-043).
+"""The Level-1 x Level-2 x bm25_weight x K sweep (UNIFIED-ABLATION-PROPOSAL.md
+§3, §6, §12; PRD-112 / ARCH-043).
+
+**Restructured 2026-09-23** (operator request, DEVIATIONS.md #201): Level 3
+is now a single continuous BM25/SapBERT weighted-rank-fusion sweep — MedCPT
+and RRF fusion (proposal §11, Option B) are dropped entirely, not merely
+unused. `_QueryChannelScores` no longer carries a MedCPT channel;
+`get_medcpt_encoders`/`combine_dense_scores`/`rrf_combine_scores` are gone.
 
 Reuses, unchanged: `model_ablation.ablation.fetch_corpus`/`Corpus`,
-`model_ablation.encoders.get_sapbert_encoder`/`get_medcpt_encoders`,
+`model_ablation.encoders.get_sapbert_encoder`,
 `retrieval_tuning.sweep.SweepQuestion`/`fetch_calibration_questions`,
 `question_gen.deterministic.build_deterministic_narrative`/
 `build_present_only_narrative` (Level 1), `orchestration_ablation.ablation
 .load_attested_vocabulary`, `orchestration_ablation.augment
 .build_arm_c_query`/`load_synthetic_record_index`/`resolve_source_record`
-(Level 2), `unified_ablation.blend` (Level 3), `app.eval.metrics.mrr`.
+(Level 2), `unified_ablation.blend` (Level 3), `app.eval.metrics.mrr`/
+`precision_recall_at_k`.
 
-One real BM25 query + one SapBERT encode + one MedCPT encode per (query,
-Level-1, Level-2) combination — 4 combinations per query — shared across
-that combination's four Level-3 arms and every alpha/k row derived from
-them, not recomputed per row.
+One real BM25 query + one SapBERT encode per (query, Level-1, Level-2)
+combination — 4 combinations per query — shared across every
+`bm25_weight`/`k` row derived from them, not recomputed per row.
 """
 
 from __future__ import annotations
@@ -25,12 +31,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from app.eval.ablation_config import ALL_ARMS as _ALL_ARMS
-from app.eval.ablation_config import AblationArm, alpha_values_for, k_values
+from app.eval.ablation_config import bm25_weight_values, k_values
 from app.eval.auto_seed import _TOPIC
 from app.eval.deidentified_source import load_deidentified_records
-from app.eval.metrics import mrr
+from app.eval.metrics import mrr, precision_recall_at_k
 from app.eval.model_ablation.ablation import Corpus, _l2_normalize_rows, fetch_corpus
-from app.eval.model_ablation.encoders import Encoder, get_medcpt_encoders, get_sapbert_encoder
+from app.eval.model_ablation.encoders import Encoder, get_sapbert_encoder
 from app.eval.orchestration_ablation.augment import (
     build_arm_c_query,
     load_synthetic_record_index,
@@ -41,12 +47,7 @@ from app.eval.question_gen.deterministic import (
     build_present_only_narrative,
 )
 from app.eval.retrieval_tuning.sweep import SweepQuestion, fetch_calibration_questions
-from app.eval.unified_ablation.blend import (
-    blend_bm25_dense,
-    bm25_raw_scores,
-    combine_dense_scores,
-    cosine_raw_scores,
-)
+from app.eval.unified_ablation.blend import blend_bm25_dense, bm25_raw_scores, cosine_raw_scores
 from app.eval.unified_ablation.per_query import PerQueryResult
 
 if TYPE_CHECKING:
@@ -64,10 +65,7 @@ _LEVEL1_BUILDERS = {
 def _first_relevant_rank(retrieved: list[str], gold: set[str]) -> int | None:
     """The actual 1-indexed rank of the first gold hit in the FULL
     (untruncated) ranking — requirement IX's own `first_relevant_rank`
-    field, independent of any one k. `reciprocal_rank_at_k` (per row) is
-    still computed via `app.eval.metrics.mrr`, reused unchanged, not derived
-    from this value, so the two are two independent looks at the same
-    ranking rather than one silently trusting the other."""
+    field, independent of any one k."""
     for i, chunk_id in enumerate(retrieved, start=1):
         if chunk_id in gold:
             return i
@@ -90,29 +88,15 @@ def _load_record_index(session: Session, records_dir: str | None) -> dict[uuid.U
 
 
 class _QueryChannelScores:
-    """BM25/SapBERT/MedCPT raw scores for one already-built query text —
-    computed once, reused by all four Level-3 arms that share this
-    (query, Level-1, Level-2) combination's text."""
+    """BM25/SapBERT raw scores for one already-built query text — computed
+    once, reused across every `bm25_weight` swept for this (query, Level-1,
+    Level-2) combination's text."""
 
-    __slots__ = ("bm25", "sapbert", "medcpt")
+    __slots__ = ("bm25", "sapbert")
 
-    def __init__(self, bm25: dict[str, float], sapbert: dict[str, float], medcpt: dict[str, float]):
+    def __init__(self, bm25: dict[str, float], sapbert: dict[str, float]):
         self.bm25 = bm25
         self.sapbert = sapbert
-        self.medcpt = medcpt
-
-
-def _rank_for_arm(scores: _QueryChannelScores, arm: AblationArm, *, alpha: float) -> list[str]:
-    if arm.level3 == "bm25":
-        return blend_bm25_dense(scores.bm25, {}, alpha=alpha)
-    if arm.level3 == "bm25_sapbert":
-        return blend_bm25_dense(scores.bm25, scores.sapbert, alpha=alpha)
-    if arm.level3 == "bm25_medcpt":
-        return blend_bm25_dense(scores.bm25, scores.medcpt, alpha=alpha)
-    if arm.level3 == "bm25_sapbert_medcpt":
-        combined = combine_dense_scores(scores.sapbert, scores.medcpt)
-        return blend_bm25_dense(scores.bm25, combined, alpha=alpha)
-    raise ValueError(f"unknown level3 condition: {arm.level3!r}")  # pragma: no cover
 
 
 def sweep_questions(
@@ -122,8 +106,6 @@ def sweep_questions(
     *,
     sapbert_encoder: Encoder,
     sapbert_chunk_matrix: np.ndarray,
-    medcpt_query_encoder: Encoder,
-    medcpt_chunk_matrix: np.ndarray,
     record_index: dict[uuid.UUID, dict],
     vocabulary: ConceptVocabulary | None,
     experiment_id: str,
@@ -171,36 +153,34 @@ def sweep_questions(
             for level2, query_text in level2_texts.items():
                 bm25 = bm25_raw_scores(store, query_text, corpus.chunk_ids)
                 sapbert_qvec = sapbert_encoder.encode([query_text])[0]
-                medcpt_qvec = medcpt_query_encoder.encode([query_text])[0]
                 scores = _QueryChannelScores(
                     bm25=bm25,
                     sapbert=cosine_raw_scores(sapbert_qvec, sapbert_chunk_matrix, corpus.chunk_ids),
-                    medcpt=cosine_raw_scores(medcpt_qvec, medcpt_chunk_matrix, corpus.chunk_ids),
                 )
 
-                for arm in _ALL_ARMS:
-                    if arm.level1 != level1 or arm.level2 != level2:
-                        continue
-                    for alpha in alpha_values_for(arm):
-                        ranking = _rank_for_arm(scores, arm, alpha=alpha)
-                        first_rank = _first_relevant_rank(ranking, gold)
-                        for k in k_grid:
-                            yield PerQueryResult(
-                                query_id=question.question_id,
-                                patient_id_or_case_id=str(question.source_record_id or ""),
-                                experiment_id=experiment_id,
-                                level1_condition=level1,
-                                level2_condition=level2,
-                                level3_condition=arm.level3,
-                                k=k,
-                                alpha=alpha,
-                                query_text=query_text,
-                                concept_enriched_query=enriched_text,
-                                retrieved_ids=ranking[:k],
-                                relevant_ids=sorted(gold),
-                                first_relevant_rank=first_rank,
-                                reciprocal_rank_at_k=mrr(ranking[:k], gold),
-                            )
+                arm = next(a for a in _ALL_ARMS if a.level1 == level1 and a.level2 == level2)
+                for weight in bm25_weight_values():
+                    ranking = blend_bm25_dense(scores.bm25, scores.sapbert, bm25_weight=weight)
+                    first_rank = _first_relevant_rank(ranking, gold)
+                    for k in k_grid:
+                        top_k = ranking[:k]
+                        yield PerQueryResult(
+                            query_id=question.question_id,
+                            patient_id_or_case_id=str(question.source_record_id or ""),
+                            experiment_id=experiment_id,
+                            level1_condition=level1,
+                            level2_condition=level2,
+                            level3_condition=arm.level3,
+                            k=k,
+                            bm25_weight=weight,
+                            query_text=query_text,
+                            concept_enriched_query=enriched_text,
+                            retrieved_ids=top_k,
+                            relevant_ids=sorted(gold),
+                            first_relevant_rank=first_rank,
+                            recall_at_k=precision_recall_at_k(top_k, gold, k)[1],
+                            reciprocal_rank_at_k=mrr(top_k, gold),
+                        )
 
 
 def run_unified_ablation(
@@ -214,21 +194,17 @@ def run_unified_ablation(
     """Thin orchestrator: fetch questions/corpus/records from the real
     Postgres session + Qdrant store, then delegate to `sweep_questions` (the
     part that's actually testable offline). Yields one `PerQueryResult` per
-    (query, arm, alpha, k) row — a generator, not a list, since a real run's
-    row count is large (§6) and `per_query.write_per_query_results` streams
-    them to disk as they're produced rather than holding the whole run in
-    memory."""
+    (query, level1, level2, bm25_weight, k) row — a generator, not a list,
+    since a real run's row count is large and
+    `per_query.write_per_query_results` streams them to disk as they're
+    produced rather than holding the whole run in memory."""
     exp_id = experiment_id or str(uuid.uuid4())
     questions: list[SweepQuestion] = fetch_calibration_questions(session)
     corpus: Corpus = fetch_corpus(store)
 
     sapbert_encoder = get_sapbert_encoder()
-    medcpt_query_encoder, medcpt_article_encoder = get_medcpt_encoders()
     sapbert_chunk_matrix = _l2_normalize_rows(
         np.asarray(sapbert_encoder.encode(corpus.texts), dtype=np.float64)
-    )
-    medcpt_chunk_matrix = _l2_normalize_rows(
-        np.asarray(medcpt_article_encoder.encode(corpus.texts), dtype=np.float64)
     )
 
     # Needed unconditionally for Level 1 (rebuilding the narrative from the
@@ -241,8 +217,6 @@ def run_unified_ablation(
         corpus,
         sapbert_encoder=sapbert_encoder,
         sapbert_chunk_matrix=sapbert_chunk_matrix,
-        medcpt_query_encoder=medcpt_query_encoder,
-        medcpt_chunk_matrix=medcpt_chunk_matrix,
         record_index=record_index,
         vocabulary=vocabulary,
         experiment_id=exp_id,

@@ -364,3 +364,286 @@ to pass").
 narrative entry matching the other three ablations' own entries),
 `DEVIATIONS.md` (every judgment call from §4 once resolved, logged at the
 moment implementation starts — not retroactively).
+
+---
+
+## 11. Addendum (approved 2026-09-23, Option B — IMPLEMENTED and run live, then SUPERSEDED by §12 the same day): RRF counterparts for every dense-bearing Level-3 arm
+
+Phases 1-10 above are implemented and were run for real 2026-09-22
+(DEVIATIONS #192-#197) — see `TRACEABILITY.md`'s `PRD-112`/`ARCH-043` rows
+for the real result. This addendum, proposed after the operator asked
+whether production's actual fusion mechanism (RRF) could be added to the
+same hierarchy the four original Level-3 arms already swept, was approved
+(Option B, §11.3) and implemented the same day — `ALL_ARMS` grew from 16
+to 28, `summarize_level3_mechanism` added, a 4th report panel added, and
+run live against the real 238-question corpus (DEVIATIONS #198). See
+§11.8 below for the real result.
+
+### 11.1 Why this wasn't in scope already
+
+The four existing Level-3 arms (`bm25`, `bm25_sapbert`, `bm25_medcpt`,
+`bm25_sapbert_medcpt`) all use the **same** fusion mechanism — a linear
+alpha-weighted blend (`retrieval_tuning.offline_fusion.weighted_rank`,
+reused unchanged, §3.3). That mechanism is *not* what production actually
+does: `app.retrieval.hybrid.retrieve()` (ARCH-003) fuses via server-side
+Qdrant **RRF** (rank-based, no alpha weight at all), and none of Phase 8's
+own arms exercise that algorithm — the closest thing today is
+`model_ablation.ablation`'s own separate `rrf_production` reference arm,
+outside this hierarchy entirely. So today's Level 3 answers "which
+*channels*, alpha-blended, beat plain BM25" but not "does the *actual
+production fusion algorithm*, applied to these channels, beat plain BM25
+too" — a real gap now that Level 3's alpha-blend arms found a large,
+statistically distinguishable SapBERT effect (DEVIATIONS #197): is that
+effect specific to linear blending, or does it survive under RRF too?
+
+### 11.2 What's directly reusable, unchanged
+
+| Concern | Existing implementation | Reuse as-is? |
+|---|---|---|
+| RRF fusion algorithm | `model_ablation.ablation._rrf_combine(rankings, *, rrf_k)` — pure, already offline/brute-force-compatible (no ANN dependency, matches this module's own convention) | yes |
+| RRF constant | `app.config.Settings.rrf_k` (default 60) — the **same** constant production's real `hybrid.retrieve()` already uses | yes — makes the new arm a faithful reproduction of production's own fusion constant, not an independently-drifting duplicate |
+| Per-channel raw scores | `unified_ablation.blend.bm25_raw_scores`/`cosine_raw_scores` — already computed once per (question, Level 1, Level 2) in `runner.sweep_questions`, reused for the alpha-blend arms today | yes — `_rrf_combine` needs *rankings* (sorted chunk-id lists), so the only new code is sorting an already-computed score dict, not a new retrieval call |
+
+No new retrieval logic, no new model, no new config setting (`rrf_k`
+already exists and is already config-driven, never hardcoded).
+
+### 11.3 Design decision: which channels does the RRF arm fuse? — **Option B chosen (operator decision, 2026-09-23)**
+
+Production RRF fuses exactly **two** channels (one sparse + one dense
+embedding) — it has no 3-way variant. This hierarchy's dense-bearing arms
+are 2- and 3-channel. Three options were laid out; the operator chose
+**Option B** over the smaller Option A specifically for its completeness:
+every existing alpha-blend arm gets a same-channels RRF twin, so channel
+choice and fusion mechanism are both independently testable, not just the
+one 3-way RRF vs. 3-way alpha-blend comparison Option A would have given.
+
+**Chosen: three new arms** — `rrf_sapbert`, `rrf_medcpt`,
+`rrf_sapbert_medcpt` — one RRF counterpart per existing dense-bearing
+alpha-blend arm. Level 3 grows from 4 to 7 configurations; `ALL_ARMS`
+grows from 16 to 28 (2×2×7).
+
+**Simplification within Option B (my own call, flagged rather than
+silently the more complex path):** the original sketch of Option B
+proposed reworking `AblationArm.level3` from one flat `Literal` into two
+crossed fields (channel × mechanism). That's unnecessary — `bm25` itself
+already sits outside any clean channel×mechanism grid (it has no
+"mechanism" choice at all, no dense channel to blend/fuse against), so a
+true 2-field cross-product would still need a special case for it, same
+as today. Keeping `Level3Condition` a **single flat 7-value `Literal`**
+(`"bm25"`, `"bm25_sapbert"`, `"rrf_sapbert"`, `"bm25_medcpt"`,
+`"rrf_medcpt"`, `"bm25_sapbert_medcpt"`, `"rrf_sapbert_medcpt"`) extends
+the exact pattern `ablation_config.py` already uses today, with zero
+dataclass restructuring, and `ALL_ARMS`'s own generator comprehension
+(`for l3 in LEVEL3_CONDITIONS`) doesn't change shape at all — just grows
+from 4 to 7 members in that one tuple.
+
+`alpha_values_for` now needs "no alpha dimension" to match a *set* rather
+than a single string equality check: `{"bm25", "rrf_sapbert",
+"rrf_medcpt", "rrf_sapbert_medcpt"}` all get the fixed `BM25_ONLY_ALPHA`
+(1.0) sentinel, not a sweep. **Naming judgment call, flagged**: keeping
+the existing `BM25_ONLY_ALPHA` constant name (rather than introducing a
+second, differently-named sentinel with the identical value and identical
+"no alpha dimension" meaning) is a deliberate minimal-diff choice — every
+existing call site/test referencing `BM25_ONLY_ALPHA` keeps working
+unchanged. Its docstring will be broadened to state it now covers every
+arm with no alpha dimension, not only the literal `bm25` arm.
+
+### 11.4 A second question this design surfaces: same-channel mechanism comparison
+
+Option B's whole motivation (§11.1) was "does the alpha-blend arms' own
+SapBERT effect survive under RRF too?" — that's a **same-channel,
+different-mechanism** question (`rrf_sapbert` vs. `bm25_sapbert`), not
+"does this arm beat plain BM25" (the comparison every arm already gets).
+Both comparisons are kept, as two separate functions matching the
+existing one-function-per-statistical-question convention
+(`summarize_level1`/`level2`/`level3`, `app.eval.unified_ablation.summary`):
+
+- `summarize_level3` (existing, extended): every non-`bm25` arm (now 6,
+  up from 3) vs. `bm25`, within each Level 1 × Level 2 slice — 6 × 4 = 24
+  comparisons, up from 12.
+- `summarize_level3_mechanism` (new): for each of the 3 channels
+  (`sapbert`, `medcpt`, `sapbert_medcpt`), `rrf_<channel>` vs.
+  `bm25_<channel>` — the actual "does RRF preserve/beat the alpha-blend
+  effect" question — 3 × 4 = 12 comparisons.
+
+### 11.5 Scope of the change (Option B, as refined above)
+
+- `app/eval/ablation_config.py`: `Level3Condition` grows to 7 values (flat
+  `Literal`, no dataclass restructuring); `alpha_values_for` checks
+  membership in a `_NO_ALPHA_ARMS` frozenset instead of a single `!=
+  "bm25"` comparison.
+- `app/eval/unified_ablation/blend.py`: new `rrf_combine_scores(*score_dicts, rrf_k) -> list[str]`
+  — sorts each already-computed score dict into a ranking, calls
+  `model_ablation.ablation._rrf_combine` unchanged.
+- `app/eval/unified_ablation/runner.py`: `_rank_for_arm` gains three
+  branches (`rrf_sapbert`, `rrf_medcpt`, `rrf_sapbert_medcpt`);
+  `settings.rrf_k` threaded through the same way `k_grid`/`alpha_values`
+  already are.
+- `app/eval/unified_ablation/summary.py`: `summarize_level3` extended to
+  all 6 non-`bm25` arms (24 comparisons); new `summarize_level3_mechanism`
+  for the 3 same-channel alpha-vs-RRF comparisons (12 comparisons).
+- `app/eval/unified_ablation/report.py`: Panel C gains 3 more series (7
+  total colors/markers — past the 6-slot validated categorical order, so
+  the palette needs re-checking, likely a shape+color combination like
+  `model_ablation.report`'s own stage-marker convention rather than 7
+  distinct hues); a new Panel D for the mechanism comparison.
+- Tests: `test_ablation_config.py` (28-arm count, all 4 no-alpha arms'
+  fixed-alpha behavior), `test_unified_ablation_blend.py`
+  (`rrf_combine_scores` matches `_rrf_combine` exactly on a
+  hand-constructed case), `test_unified_ablation_runner.py`/
+  `test_unified_ablation_summary.py` (grid/row-count assertions updated
+  for 28 arms; new tests for `summarize_level3_mechanism`).
+- **A second real run** would be needed once implemented — this
+  addendum's whole point is new arms, so the existing 2026-09-22 run's
+  `per_query_results.jsonl` has no `rrf_*` rows to retroactively mine.
+  Row count per question grows from 760 to 880: per (Level 1, Level 2)
+  combination, the 7 Level-3 arms contribute `1 (bm25) + 6 (bm25_sapbert)
+  + 1 (rrf_sapbert) + 6 (bm25_medcpt) + 1 (rrf_medcpt) + 6
+  (bm25_sapbert_medcpt) + 1 (rrf_sapbert_medcpt) = 22` arm-alpha rows
+  (4 arms with no alpha dimension — `bm25` and the 3 `rrf_*` arms — each
+  contribute 1 row; the 3 alpha-blend dense arms each contribute the full
+  6-value sweep), × 10 k values = 220, × 4 (Level 1 × Level 2) = 880 rows
+  per question. This will be verified against the real run's own printed
+  row count once implemented, not assumed from this arithmetic alone —
+  matching this project's own established practice (the original 16-arm
+  design's own 760-per-question figure was likewise confirmed against a
+  live test/run, not just derived on paper).
+
+### 11.6 Out of scope (unchanged from §8)
+
+Still never touches `app.retrieval.hybrid.retrieve()` itself — this adds
+three more *offline* arms alongside the existing four, it does not change
+what production RRF does or read `rrf_k` differently than production
+already does.
+
+### 11.7 Testing plan
+
+Same offline-only, `:memory:` Qdrant + stub-backend convention as every
+other arm in this module (§9) — `_rrf_combine` itself already has its own
+existing test coverage in `test_model_ablation.py` and is reused
+unchanged, not re-tested from scratch.
+
+### 11.8 Real result (2026-09-23, DEVIATIONS #198)
+
+Run live against the same 238-question/311-chunk corpus as the original
+run, real SapBERT/MedCPT, 880 rows/question (209,440 total). Row count
+matched §11.5's hand-derivation exactly (`4 x 22 x 10 = 880`), verified
+against the real run's own printed count, not assumed.
+
+**The mechanism comparison this addendum was built to answer**
+(`summarize_level3_mechanism`, Panel D): **RRF does not merely preserve
+the alpha-blend arms' own SapBERT effect — it modestly *amplifies* it.**
+`rrf_sapbert` beats its own `bm25_sapbert` sibling in all 4 Level-1 x
+Level-2 slices (+0.053 to +0.109 MRR@12, three of four CIs excluding
+zero). `rrf_medcpt` vs. `bm25_medcpt` is mixed/near-zero in every slice
+(no CI clearly excludes zero either direction). `rrf_sapbert_medcpt` vs.
+`bm25_sapbert_medcpt` is mixed — positive and CI-excluding-zero in 2 of 4
+slices, indistinguishable from zero in the other 2.
+
+Consistent with this, every `rrf_sapbert` vs. plain-`bm25` delta
+(`summarize_level3`, Panel C) is larger than its `bm25_sapbert`
+counterpart's own delta (e.g. present_only/raw: alpha-blend +0.132 vs.
+RRF +0.209; all_assessed/enriched: alpha-blend +0.119 vs. RRF +0.228) —
+RRF fusion is, on this corpus and at this N, the stronger of the two
+fusion mechanisms for the SapBERT channel specifically.
+
+**Not acted on**, same posture as every other ablation result this
+project has produced: production `app.retrieval.hybrid.retrieve()` is
+untouched; a production-reopening decision (e.g. "should production RRF
+add a SapBERT channel") is separate, unapproved, later work. Full
+reproducibility snapshot and per-query data:
+`results/ablation/20260923T042249Z-95df853f/`.
+
+---
+
+## 12. Restructured 2026-09-23 (operator-supplied hierarchy, DEVIATIONS.md
+#201) — SUPERSEDES §11 entirely
+
+The operator supplied a complete nested-tree specification for the
+hierarchy, redefining Level 3 and the primary metric. This is **not an
+extension** of §11's RRF work the way §11 extended §1-10 — it **replaces**
+it. MedCPT and RRF support (both the original 3-channel design and the
+§11 addendum) were removed from the codebase, not deprecated in place.
+
+### 12.1 The new hierarchy
+
+Level 1 and Level 2 are unchanged (present-only vs. all-assessed clinical
+signs; vocabulary-enriched vs. raw query). **Level 3 is a single
+continuous BM25/SapBERT weighted-rank-fusion sweep**:
+
+```
+w_BM25 ∈ {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0}
+```
+
+11 points at 0.1 granularity (up from the original 6 at 0.2). `w_BM25 =
+0.0` is pure SapBERT, `w_BM25 = 1.0` is pure BM25 — the same
+`retrieval_tuning.offline_fusion.weighted_rank` formula every prior
+design already used, just no longer branched by named "arm identity."
+MedCPT (both the standalone `bm25_medcpt`/`bm25_sapbert_medcpt` arms and
+their §11 RRF counterparts) and RRF fusion itself are dropped entirely —
+"the scope reduction is still explicit, drop use of MedCPT" (operator).
+
+`ALL_ARMS` (`app.eval.ablation_config`) shrinks from 28 (2×2×7) to 4
+(2×2×1) — Level 3 no longer varies as a categorical identity; every leaf
+configuration sweeps the same `bm25_weight` grid uniformly. The whole
+`has_alpha_dimension`/`alpha_values_for`/`BM25_ONLY_ALPHA` machinery that
+existed specifically to handle `bm25`'s and the `rrf_*` arms' "no weight
+dimension" edge case is removed — nothing left to special-case.
+
+### 12.2 Primary metric: Recall@K, not MRR@K
+
+"The primary evaluation metric should be updated to Recall @K where K is
+not hard coded. K should be allowed to range between 2 and 20 with
+increments of 2" (operator) — this K range already matched
+`ablation_k_values`'s existing default, so no new K-range config was
+needed. `PerQueryResult` gains a new `recall_at_k: float` field
+(`app.eval.metrics.precision_recall_at_k`, reused unchanged); the
+pre-existing `reciprocal_rank_at_k` (MRR) is kept as a **secondary**
+metric, not deleted — every `summarize_*` function in
+`app.eval.unified_ablation.summary` takes a `metric: Literal["recall",
+"mrr"]` selector, defaulting to `"recall"`.
+
+### 12.3 Naming: `alpha` → `bm25_weight`
+
+"Instead of the using the label `alpha` change to `weighted rank` with
+w_BM25 ∈ {...}" — resolved directly with the operator as the field name
+`bm25_weight` (not `w_bm25` or another form). Renamed in
+`PerQueryResult.alpha` → `.bm25_weight`, `ABLATION_ALPHA_VALUES` →
+`ABLATION_BM25_WEIGHT_VALUES`, `--alpha-values` → `--bm25-weight-values`
+(CLI). The shared `retrieval_tuning.offline_fusion.weighted_rank`
+function itself keeps its own `alpha=` parameter name unchanged — it's
+shared with `retrieval_tuning`'s own code, which was not part of this
+request; only `unified_ablation`'s own call site renamed the concept.
+
+### 12.4 Statistical comparison: a curve, not an arm-vs-reference delta
+
+Level 3 no longer has a "reference arm" to compare others against — it's
+one continuous parameter. `summarize_level3`/`summarize_level3_mechanism`
+(§11) are both replaced by `summarize_level3_curve`: one `Level3Curve` per
+Level-1×Level-2 slice (4 total), each holding the full 11-point recall@k
+curve plus a paired-bootstrap delta between the sweep's two endpoints
+(`bm25_weight=1.0` vs. `bm25_weight=0.0`) as the headline number — the
+natural replacement for "arm vs. reference" now that there's no reference.
+
+### 12.5 Report: back to 3 panels, Panel C redesigned
+
+Panel D (the RRF-vs-alpha-blend mechanism comparison) is gone with RRF.
+Panel C is no longer a point-with-CI arm comparison — it's a real line
+chart (`bm25_weight` on x, recall@k on y, one line per Level-1×Level-2
+slice), mirroring `retrieval_tuning.report.chart_alpha_vs_recall_by_k`'s
+own established "swept parameter on x, one line per categorical group"
+pattern. A real layout bug (legend + 4-line endpoint-delta annotation
+running off the image edge) was found via live visual inspection of the
+rendered PNG, not assumed correct from a successful render call, and
+fixed with shorter slice labels and wider margins.
+
+### 12.6 Verification
+
+Offline: 695 tests passing (net fewer than §11's 710 — more MedCPT/RRF
+tests were deleted than recall/weight tests were added, matching the code
+deleted in the same change), same 19 pre-existing unrelated failures.
+Live: the restructured pipeline smoke-tested end-to-end against the real
+corpus three times while fixing the Panel C layout bug, confirmed no
+MedCPT encoder ever loads. **Not yet run at full scale** — pending the
+2,500-question ablation-holdout pool (DEVIATIONS #199/#200) finishing
+generation. Full account: DEVIATIONS.md #201.

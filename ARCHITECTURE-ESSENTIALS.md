@@ -363,7 +363,23 @@ harness's own `gold_relevant_chunks` pool:
   `results/ablation/<run_id>/{configuration.json,per_query_results.jsonl}`
   (file-based, not Postgres — a deliberate exception to the other two
   modules' PNG-only convention, since per-query row count is much larger).
-  **Not yet run against the real corpus** as of this writing.
+  **Real result (2026-09-22, 238 questions, real SapBERT/MedCPT)** — the
+  first ablation module to find CIs excluding zero rather than
+  overlapping: BM25+SapBERT robustly beats BM25 in all 4 L1×L2 slices;
+  BM25+MedCPT robustly underperforms it in 3 of 4; L1/L2 deltas also both
+  distinguishable from zero. Not acted on — production retrieval
+  untouched (DEVIATIONS.md #197). **Extended 2026-09-23** (operator-chosen
+  Option B): an RRF-fusion counterpart for every dense-bearing arm
+  (28 arms total) + a same-channel mechanism comparison — RRF modestly
+  *amplifies* the SapBERT effect rather than just preserving it; MedCPT's
+  mechanism comparison stays mixed. **Restructured 2026-09-23, superseding
+  the above** (operator-supplied hierarchy) — Level 3 collapses to one
+  continuous BM25/SapBERT weighted-rank-fusion sweep (`w_BM25` 0.0→1.0,
+  11 points); MedCPT and RRF both dropped entirely (code removed, not
+  unused); `ALL_ARMS` 28 → 4. Primary metric MRR@K → **Recall@K** (K still
+  config-driven; MRR@K kept secondary). `alpha` renamed `bm25_weight`.
+  Report back to 3 panels, Level 3 now a real line chart. Still not acted
+  on — production retrieval untouched (DEVIATIONS.md #201).
 
 ---
 

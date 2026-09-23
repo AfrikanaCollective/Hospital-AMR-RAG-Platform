@@ -1,15 +1,28 @@
 """Explicit configuration representation for the unified hierarchical
-ablation (PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §3.4, §3.6).
+ablation (PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §3.4, §3.6, §12).
 
-One `AblationArm` per leaf configuration in the Level-1 x Level-2 x Level-3
-hierarchy (16 total, `ALL_ARMS`) — generated, never hand-enumerated, so the
-set of arms can't silently drift out of sync with the three level
-definitions. K and alpha are read from `app.config.Settings` (never
-hardcoded, per the proposal's own requirement) — shared by this module and
-`app.eval.unified_ablation` only; the three pre-existing ablation modules
-(`model_ablation`, `retrieval_tuning`, `orchestration_ablation`) keep their
-own independent K/alpha/MRR_K constants for now (proposal §8: not silently
-migrated in this phase).
+**Restructured 2026-09-23 (operator request, DEVIATIONS.md #201)**: Level 3
+is now a single continuous weighted-rank-fusion sweep between BM25 and
+SapBERT only — `w_BM25 ∈ {0.0, 0.1, ..., 1.0}` (11 points) — not a set of
+distinct named arms. MedCPT and RRF fusion (proposal §11, Option B) are
+both dropped entirely, not merely excluded from the default sweep; that
+code has been removed, not deprecated in place. `AblationArm.level3` is
+kept as a single-member `Literal` (`"bm25_sapbert"`) rather than deleted
+outright, so `AblationArm`/`ALL_ARMS`/the per-query `level3_condition`
+field all stay structurally the same shape as before — a leaf
+configuration is still `(level1, level2, level3)`, level3 just no longer
+varies.
+
+`ALL_ARMS` is 4 leaf configurations (2 Level-1 x 2 Level-2 x 1 Level-3),
+each swept across all 11 `bm25_weight` values and the full `k` grid — 44
+(level1, level2, bm25_weight) combinations total, `len(k_values())` rows
+each.
+
+K and `bm25_weight` are read from `app.config.Settings` (never hardcoded)
+— shared by this module and `app.eval.unified_ablation` only; the three
+pre-existing ablation modules (`model_ablation`, `retrieval_tuning`,
+`orchestration_ablation`) keep their own independent K/alpha/MRR_K
+constants for now (proposal §8: not silently migrated in this phase).
 """
 
 from __future__ import annotations
@@ -21,19 +34,11 @@ from app.config import get_settings
 
 Level1Condition = Literal["present_only", "all_assessed"]
 Level2Condition = Literal["enriched", "raw"]
-Level3Condition = Literal["bm25", "bm25_sapbert", "bm25_medcpt", "bm25_sapbert_medcpt"]
+Level3Condition = Literal["bm25_sapbert"]
 
 LEVEL1_CONDITIONS: tuple[Level1Condition, ...] = get_args(Level1Condition)
 LEVEL2_CONDITIONS: tuple[Level2Condition, ...] = get_args(Level2Condition)
 LEVEL3_CONDITIONS: tuple[Level3Condition, ...] = get_args(Level3Condition)
-
-# The one Level-3 arm with no dense channel to blend against -- never
-# alpha-swept; every row for it carries the fixed, mathematically consistent
-# alpha=1.0 ("pure BM25", matching `weighted_rank`'s own existing
-# convention: alpha=1 -> pure BM25, alpha=0 -> pure dense) rather than a
-# null, so every row in the per-query output stays directly comparable on
-# `alpha` with no special case downstream (UNIFIED-ABLATION-PROPOSAL.md §3.5).
-BM25_ONLY_ALPHA = 1.0
 
 
 @dataclass(frozen=True)
@@ -48,11 +53,6 @@ class AblationArm:
     level3: Level3Condition
 
     @property
-    def has_alpha_dimension(self) -> bool:
-        """False only for `bm25` -- no dense channel, so no alpha sweep."""
-        return self.level3 != "bm25"
-
-    @property
     def label(self) -> str:
         """A stable, human-readable identifier for reports/logs -- e.g.
         `"L1-present_only__L2-enriched__L3-bm25_sapbert"`."""
@@ -64,25 +64,23 @@ ALL_ARMS: tuple[AblationArm, ...] = tuple(
     for l1 in LEVEL1_CONDITIONS
     for l2 in LEVEL2_CONDITIONS
     for l3 in LEVEL3_CONDITIONS
-)  # 16 = 2 x 2 x 4, generated -- never hand-enumerated (proposal §3.4)
+)  # 4 = 2 x 2 x 1, generated -- never hand-enumerated (proposal §3.4)
 
 
 def k_values() -> tuple[int, ...]:
     return get_settings().ablation_k_values_tuple
 
 
-def alpha_values() -> tuple[float, ...]:
-    return get_settings().ablation_alpha_values_tuple
+def bm25_weight_values() -> tuple[float, ...]:
+    return get_settings().ablation_bm25_weight_values_tuple
 
 
 def mrr_k() -> int:
+    """The single headline `k` used for Level 1/2's point-with-CI summary
+    panels (both the primary recall@k and the secondary MRR@k) -- Level
+    3's own primary metric is reported as a curve across the FULL `k_values()`
+    range instead (proposal, "K should be allowed to range... not hard
+    coded"), not collapsed to one point. Name kept as `mrr_k`/`ABLATION_MRR_K`
+    (not renamed to something metric-neutral) -- a deliberate minimal-diff
+    choice; it now doubles as the recall@k headline k too."""
     return get_settings().ablation_mrr_k
-
-
-def alpha_values_for(arm: AblationArm) -> tuple[float, ...]:
-    """The alphas to actually sweep for `arm` -- the full configured grid
-    for a dense-bearing arm, or exactly `(BM25_ONLY_ALPHA,)` for `bm25`
-    (one row, not `len(ALPHA_VALUES)` identical ones)."""
-    if not arm.has_alpha_dimension:
-        return (BM25_ONLY_ALPHA,)
-    return alpha_values()

@@ -1,30 +1,37 @@
 """Seaborn PNG chart generation for the unified hierarchical ablation
-report (PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §5). Requires the
-`retrieval-tuning` optional extra (seaborn/pandas/matplotlib); not a core
-runtime dependency.
+report (PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §5, §12). Requires
+the `retrieval-tuning` optional extra (seaborn/pandas/matplotlib); not a
+core runtime dependency.
+
+**Restructured 2026-09-23** (operator request, DEVIATIONS.md #201): back
+to a 3-panel A/B/C layout (Panel D, the RRF-vs-alpha-blend mechanism
+comparison, is removed — RRF is dropped entirely) and the primary metric
+is now recall@k, not MRR@k. Panel C is redesigned from a point-with-CI
+comparison into a real line chart — `bm25_weight` on the x-axis, recall@k
+on the y-axis, one line per Level-1 x Level-2 slice (4 lines) — since
+Level 3 is no longer a set of named arms to compare, it's one continuous
+BM25/SapBERT weighted-rank-fusion sweep. This mirrors
+`retrieval_tuning.report.chart_alpha_vs_recall_by_k`'s own established
+"swept continuous parameter on x, metric on y, one line per categorical
+group" pattern rather than inventing a new chart shape.
 
 Palette: copied (not imported — same convention as `model_ablation.report`'s
 own docstring explains) from `retrieval_tuning.report`'s already
 dataviz-skill-validated palette: same surface/ink/gridline/baseline colors,
-same 6-slot categorical order. Three panels, one per level, matching the
-established A/B/C combined-figure layout (`retrieval_tuning.report`,
-`model_ablation.report`):
+same 6-slot categorical order.
 
 - Panel A (Level 1): present-only vs. all-assessed clinical signs — two
   categorical points with a bootstrap-CI error bar, plus the paired
-  delta CI printed as an annotation (the headline number requirement XII
-  asks for, not just a visual comparison).
+  delta CI printed as an annotation.
 - Panel B (Level 2): enriched vs. raw query, dodged within each Level 1
-  condition — 4 points (2 L1 x 2 L2), color = L2 (raw/enriched, a genuine
-  categorical identity), x-position groups by L1.
-- Panel C (Level 3): each dense-bearing arm vs. the `bm25` reference,
-  faceted along x by Level 1 x Level 2 (4 slices), color = arm — 12 points
-  total (3 arms x 4 slices) plus each slice's own `bm25` reference marker.
+  condition — 4 points (2 L1 x 2 L2), color = L2, x-position groups by L1.
+- Panel C (Level 3): recall@k vs. `bm25_weight` (0.0=pure SapBERT,
+  1.0=pure BM25), one line per Level-1 x Level-2 slice (4 lines, a
+  genuine categorical identity, well within the validated 8-hue CVD-safe
+  count).
 
-All three read pre-computed `summary.Level*Summary` objects (this module
-does no aggregation itself — mirrors `model_ablation.report` reading
-`AblationResult.mrr_rows`' pre-computed `ci_low`/`ci_high` rather than
-calling bootstrap machinery from inside a chart function).
+All three read pre-computed `summary.Level*Summary`/`Level3Curve` objects
+(this module does no aggregation itself).
 """
 
 from __future__ import annotations
@@ -34,8 +41,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from app.eval.ablation_config import Level1Condition
-from app.eval.unified_ablation.summary import ArmScore, Level1Summary, Level2Summary, Level3Summary
+from app.eval.ablation_config import Level1Condition, Level2Condition
+from app.eval.unified_ablation.summary import ArmScore, Level1Summary, Level2Summary, Level3Curve
 
 _SURFACE = "#fcfcfb"
 _INK_PRIMARY = "#0b0b0b"
@@ -51,13 +58,19 @@ _Y_TOP = 1.0
 
 _LEVEL1_LABELS = {"present_only": "Present-only signs", "all_assessed": "All assessed signs"}
 _LEVEL2_LABELS = {"raw": "Raw query", "enriched": "Vocabulary-enriched query"}
-_LEVEL3_LABELS = {
-    "bm25": "BM25",
-    "bm25_sapbert": "BM25 + SapBERT",
-    "bm25_medcpt": "BM25 + MedCPT",
-    "bm25_sapbert_medcpt": "BM25 + SapBERT + MedCPT",
-}
-_LEVEL3_ORDER = ("bm25_sapbert", "bm25_medcpt", "bm25_sapbert_medcpt")
+# Shorter forms for Panel C's combined Level-1/Level-2 legend and endpoint
+# annotation, which both need to fit 4 combined labels in a narrow margin —
+# the full `_LEVEL1_LABELS`/`_LEVEL2_LABELS` strings ran off the figure
+# edge when combined (found live, DEVIATIONS.md #201).
+_LEVEL1_SHORT = {"present_only": "Present-only", "all_assessed": "All-assessed"}
+_LEVEL2_SHORT = {"raw": "Raw", "enriched": "Enriched"}
+_SLICES: tuple[tuple[Level1Condition, Level2Condition], ...] = (
+    ("present_only", "raw"),
+    ("present_only", "enriched"),
+    ("all_assessed", "raw"),
+    ("all_assessed", "enriched"),
+)
+_SLICE_COLORS = dict(zip(_SLICES, _CATEGORICAL[: len(_SLICES)], strict=True))
 
 
 def _style_axes(ax: plt.Axes) -> None:
@@ -132,7 +145,7 @@ def _point_with_ci(ax: plt.Axes, x: float, arm: ArmScore, *, color: str, marker:
 
 def chart_level1(summary: Level1Summary, k: int, ax: plt.Axes) -> None:
     """Panel A: present-only vs. all-assessed clinical signs, pooled over
-    Level 2 x Level 3 x alpha (`summary.summarize_level1`)."""
+    Level 2 x bm25_weight (`summary.summarize_level1`)."""
     _style_axes(ax)
     order = ["present_only", "all_assessed"]
     arms = {"present_only": summary.present_only, "all_assessed": summary.all_assessed}
@@ -143,7 +156,7 @@ def chart_level1(summary: Level1Summary, k: int, ax: plt.Axes) -> None:
     ax.set_xticklabels([_LEVEL1_LABELS[k2] for k2 in order], fontsize=9)
     ax.set_xlim(-0.5, len(order) - 0.5)
     ax.set_ylim(0.0, _Y_TOP)
-    ax.set_ylabel(f"Mean Reciprocal Rank@{k}", fontsize=9)
+    ax.set_ylabel(f"Recall@{k}", fontsize=9)
 
     d = summary.delta
     ax.text(
@@ -178,7 +191,7 @@ def chart_level2(summaries: dict[Level1Condition, Level2Summary], k: int, ax: pl
     ax.set_xticklabels([_LEVEL1_LABELS[l1] for l1 in l1_order], fontsize=9)
     ax.set_xlim(-0.5, len(l1_order) - 0.5)
     ax.set_ylim(0.0, _Y_TOP)
-    ax.set_ylabel(f"Mean Reciprocal Rank@{k}", fontsize=9)
+    ax.set_ylabel(f"Recall@{k}", fontsize=9)
 
     handles = [
         Line2D([0], [0], marker="o", linestyle="none", markersize=7, color=colors[l2])
@@ -192,58 +205,74 @@ def chart_level2(summaries: dict[Level1Condition, Level2Summary], k: int, ax: pl
     )
 
 
-def chart_level3(summaries: list[Level3Summary], k: int, ax: plt.Axes) -> None:
-    """Panel C: each dense-bearing arm vs. `bm25`, faceted along x by
-    Level 1 x Level 2 (4 slices), color = arm (`summary.summarize_level3`).
-    `bm25`'s own reference point is drawn once per slice, in the fixed
-    neutral-gray baseline identity (never one of the three arms' hues)."""
+def chart_level3(curves: list[Level3Curve], k: int, ax: plt.Axes) -> None:
+    """Panel C: recall@k vs. `bm25_weight` (0.0 = pure SapBERT, 1.0 = pure
+    BM25), one line per Level-1 x Level-2 slice (`summary
+    .summarize_level3_curve`) — Level 3 is a continuous weighted-rank-fusion
+    sweep, not a set of named arms (DEVIATIONS.md #201)."""
     _style_axes(ax)
-    slices = [
-        ("present_only", "raw"),
-        ("present_only", "enriched"),
-        ("all_assessed", "raw"),
-        ("all_assessed", "enriched"),
-    ]
-    dodge = {"bm25_sapbert": -0.2, "bm25_medcpt": 0.0, "bm25_sapbert_medcpt": 0.2}
-    colors = dict(zip(_LEVEL3_ORDER, _CATEGORICAL[: len(_LEVEL3_ORDER)], strict=True))
 
-    by_slice: dict[tuple[str, str], dict[str, Level3Summary]] = {}
-    for s in summaries:
-        by_slice.setdefault((s.level1, s.level2), {})[s.level3] = s
-
-    for xi, key in enumerate(slices):
-        rows = by_slice.get(key, {})
-        if not rows:
+    by_slice = {(c.level1, c.level2): c for c in curves}
+    for key in _SLICES:
+        curve = by_slice.get(key)
+        if curve is None:
             continue
-        reference = next(iter(rows.values())).reference
-        _point_with_ci(ax, xi, reference, color=_BASELINE_GRAY, marker="D")
-        for level3 in _LEVEL3_ORDER:
-            arm_summary = rows.get(level3)
-            if arm_summary is None:
-                continue
-            _point_with_ci(ax, xi + dodge[level3], arm_summary.arm, color=colors[level3])
+        weights = [p.bm25_weight for p in curve.points]
+        means = [p.score.mean for p in curve.points]
+        color = _SLICE_COLORS[key]
+        ax.plot(
+            weights,
+            means,
+            color=color,
+            linewidth=1.6,
+            marker="o",
+            markersize=5,
+            markeredgecolor=_SURFACE,
+            markeredgewidth=0.8,
+            zorder=3,
+        )
 
-    ax.set_xticks(range(len(slices)))
-    ax.set_xticklabels(
-        [f"{_LEVEL1_LABELS[l1]}\n{_LEVEL2_LABELS[l2]}" for l1, l2 in slices], fontsize=7
-    )
-    ax.set_xlim(-0.5, len(slices) - 0.5)
+    ax.set_xlim(-0.02, 1.02)
     ax.set_ylim(0.0, _Y_TOP)
-    ax.set_ylabel(f"Mean Reciprocal Rank@{k}", fontsize=9)
+    ax.set_xlabel(
+        "BM25 weight (weighted rank fusion; 0.0 = pure SapBERT, 1.0 = pure BM25)", fontsize=8
+    )
+    ax.set_ylabel(f"Recall@{k}", fontsize=9)
 
     handles = [
-        Line2D([0], [0], marker="D", linestyle="none", markersize=7, color=_BASELINE_GRAY)
-    ] + [
-        Line2D([0], [0], marker="o", linestyle="none", markersize=7, color=colors[l3])
-        for l3 in _LEVEL3_ORDER
+        Line2D([0], [0], color=_SLICE_COLORS[key], linewidth=1.6, marker="o", markersize=5)
+        for key in _SLICES
     ]
-    labels = [_LEVEL3_LABELS["bm25"]] + [_LEVEL3_LABELS[l3] for l3 in _LEVEL3_ORDER]
+    labels = [f"{_LEVEL1_SHORT[l1]} / {_LEVEL2_SHORT[l2]}" for l1, l2 in _SLICES]
     _set_legend(ax, handles, labels)
+
+    lines = []
+    for key in _SLICES:
+        curve = by_slice.get(key)
+        if curve is None:
+            continue
+        d = curve.endpoints_delta
+        l1, l2 = key
+        lines.append(
+            f"{_LEVEL1_SHORT[l1]}/{_LEVEL2_SHORT[l2]}: Δ(BM25−SapBERT)="
+            f"{d.mean_delta:+.3f} [{d.ci_low:+.3f}, {d.ci_high:+.3f}]"
+        )
+    ax.text(
+        0.0,
+        -0.30,
+        "\n".join(lines),
+        transform=ax.transAxes,
+        fontsize=6.5,
+        color=_INK_SECONDARY,
+        ha="left",
+        va="top",
+    )
+
     _finish(
         ax,
         title=(
-            "Level 3 — retrieval/embedding configuration, within each Level 1 x "
-            "Level 2 (95% bootstrap CI)"
+            "Level 3 — BM25/SapBERT weighted-rank fusion sweep, by Level 1 x "
+            "Level 2 (95% CI on endpoints)"
         ),
         letter="C",
     )
@@ -252,7 +281,7 @@ def chart_level3(summaries: list[Level3Summary], k: int, ax: plt.Axes) -> None:
 def generate_report(
     level1: Level1Summary,
     level2: dict[Level1Condition, Level2Summary],
-    level3: list[Level3Summary],
+    level3: list[Level3Curve],
     *,
     k: int,
     out_dir: Path,
@@ -262,7 +291,12 @@ def generate_report(
 
     fig, axes = plt.subplots(3, 1, figsize=_FIGSIZE, dpi=_DPI)
     fig.patch.set_facecolor(_SURFACE)
-    fig.subplots_adjust(left=0.11, right=0.72, top=0.95, bottom=0.06, hspace=0.85)
+    # `right=0.68` (narrower axes than the other panels' own 0.72) and
+    # `bottom=0.16` (up from 0.08) -- Panel C's legend (4 combined Level-1/
+    # Level-2 labels) and its 4-line endpoint-delta annotation both ran off
+    # the figure edge at the tighter margins other panels use fine (found
+    # live, DEVIATIONS.md #201).
+    fig.subplots_adjust(left=0.11, right=0.68, top=0.95, bottom=0.16, hspace=0.9)
 
     chart_level1(level1, k, axes[0])
     chart_level2(level2, k, axes[1])

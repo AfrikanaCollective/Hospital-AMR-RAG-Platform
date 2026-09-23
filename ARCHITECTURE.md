@@ -1436,8 +1436,40 @@ renders alongside it in the same run directory. Code home:
 `app/eval/ablation_config.py`, `app/eval/bootstrap.py`,
 `scripts/run_unified_ablation.py`; tests: `tests/test_unified_ablation_
 {blend,runner,summary}.py`, `tests/test_ablation_config.py`,
-`tests/test_bootstrap.py`. **Not yet run against the real corpus** as of
-this writing — offline-verified only (DEVIATIONS.md #192/#193).
+`tests/test_bootstrap.py`. **Run for real (2026-09-22)** against the live
+311-chunk corpus and 238 real calibration questions, `MODEL_ABLATION_BACKEND
+=local` (real SapBERT/MedCPT) — the first ablation module (of all four) to
+find multiple 95% CIs excluding zero rather than substantially overlapping
+ones: BM25+SapBERT robustly beats plain BM25 in all 4 Level-1×Level-2
+slices; BM25+MedCPT robustly underperforms it in 3 of 4; Level 1 and
+Level 2 deltas are both statistically distinguishable from zero too. Not
+acted on — `app.retrieval.hybrid.retrieve()` (ARCH-003) remains untouched,
+per this module's own explicit scope; a production-reopening decision is
+separate and unapproved. **Extended 2026-09-23** (operator-chosen Option
+B, `UNIFIED-ABLATION-PROPOSAL.md` §11): an RRF-fusion counterpart added
+for every dense-bearing alpha-blend arm (`ALL_ARMS` 16 → 28) plus a
+same-channel mechanism comparison (`summarize_level3_mechanism`) — real
+re-run result: RRF modestly *amplifies*, rather than merely preserving,
+the SapBERT effect above (`rrf_sapbert` beats `bm25_sapbert` in all 4
+slices); MedCPT's own mechanism comparison stays mixed/near-zero.
+
+**Restructured 2026-09-23, superseding the above** (operator-supplied
+hierarchy, DEVIATIONS.md #201): Level 3 collapses to a single continuous
+BM25/SapBERT weighted-rank-fusion sweep — `w_BM25 ∈ {0.0, 0.1, ..., 1.0}`
+(11 points). **MedCPT and RRF fusion are both dropped entirely** (code
+removed, not merely unused) — `ALL_ARMS` shrinks from 28 to 4 (2×2×1, the
+single Level-3 identity swept uniformly across the weight grid, rather
+than branching per arm). Primary metric changed from MRR@K to **Recall@K**
+(`app.eval.metrics.precision_recall_at_k`, reused unchanged; K still
+config-driven, never hardcoded); MRR@K kept as a secondary metric. `alpha`
+renamed `bm25_weight` throughout (config `ABLATION_BM25_WEIGHT_VALUES`,
+per-query schema field, CLI flag) — the shared, unrenamed
+`retrieval_tuning.offline_fusion.weighted_rank` function itself is
+untouched, only `unified_ablation`'s own call site renamed the concept.
+The combined report returns to 3 panels; Panel C is now a real line chart
+(BM25 weight vs. recall@k, one line per Level-1×Level-2 slice) rather than
+a point-with-CI arm comparison. Full result + reproducibility snapshot:
+`TRACEABILITY.md`'s `PRD-112` row; DEVIATIONS.md #192–#201.
 
 ---
 

@@ -7,7 +7,12 @@ File-based, not a Postgres table (operator decision, proposal §4 point 2):
     └── ablation/
         └── <run_id>/
             ├── configuration.json       # reproducibility snapshot, §3.8
-            └── per_query_results.jsonl  # one line per (query, arm, k, alpha)
+            └── per_query_results.jsonl  # one line per (query, level1, level2, k, bm25_weight)
+
+**Restructured 2026-09-23** (operator request, DEVIATIONS.md #201):
+`alpha` renamed to `bm25_weight` (`w_BM25` in the operator's own
+notation); `recall_at_k` added as the new primary metric, alongside the
+pre-existing `reciprocal_rank_at_k` (MRR, now secondary).
 """
 
 from __future__ import annotations
@@ -22,12 +27,12 @@ _DEFAULT_RESULTS_ROOT = Path("results/ablation")
 
 @dataclass(frozen=True)
 class PerQueryResult:
-    """One row per (query, level1, level2, level3, alpha, k) — exactly the
-    fields requirement IX lists. The same query is evaluated under all 16
-    Level-1 x Level-2 x Level-3 leaf conditions (each swept over its own
-    alpha/k grid, `app.eval.ablation_config`), so `query_id` repeats across
-    many rows by design — that's what makes the paired comparisons in §3.7
-    possible."""
+    """One row per (query, level1, level2, k, bm25_weight) — exactly the
+    fields requirement IX lists, plus `recall_at_k` (DEVIATIONS.md #201).
+    The same query is evaluated under every Level-1 x Level-2 combination
+    swept across the full `bm25_weight`/k grid (`app.eval.ablation_config`),
+    so `query_id` repeats across many rows by design — that's what makes
+    the paired comparisons in §3.7 possible."""
 
     query_id: str
     patient_id_or_case_id: str
@@ -38,7 +43,7 @@ class PerQueryResult:
     level3_condition: str
 
     k: int
-    alpha: float
+    bm25_weight: float
 
     query_text: str
     concept_enriched_query: str
@@ -47,7 +52,8 @@ class PerQueryResult:
     relevant_ids: list[str]
 
     first_relevant_rank: int | None
-    reciprocal_rank_at_k: float
+    recall_at_k: float
+    reciprocal_rank_at_k: float  # secondary (MRR) metric, kept for continuity
 
     def to_json_dict(self) -> dict:
         return asdict(self)
@@ -68,8 +74,9 @@ def write_configuration(run_dir: Path, config: dict) -> Path:
 
 def write_per_query_results(run_dir: Path, rows: Iterable[PerQueryResult]) -> Path:
     """Streams rows to disk one line at a time rather than building the
-    whole list in memory first — a real run's row count is large (16 arms x
-    up to 6 alphas x `len(K_VALUES)` k's per query, x up to 100 queries)."""
+    whole list in memory first — a real run's row count is large (4 arms x
+    up to 11 bm25_weight values x `len(K_VALUES)` k's per query, x up to
+    thousands of queries)."""
     path = run_dir / "per_query_results.jsonl"
     with path.open("w", encoding="utf-8") as f:
         for row in rows:

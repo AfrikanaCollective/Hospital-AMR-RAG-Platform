@@ -1,9 +1,13 @@
-"""The 16-arm x alpha x K sweep, offline (PRD-112 / ARCH-043) — exercises
-`sweep_questions` (the testable core), not `run_unified_ablation` (its thin
-Postgres-session-touching wrapper, same split precedent as
-`app.eval.retrieval_tuning.sweep.run_sweep`/`run_full_ablation` and
-`app.eval.model_ablation.ablation.run_ablation`/`run_full_ablation` — see
-each module's own test file's docstring)."""
+"""The Level-1 x Level-2 x bm25_weight x K sweep, offline (PRD-112 /
+ARCH-043) — exercises `sweep_questions` (the testable core), not
+`run_unified_ablation` (its thin Postgres-session-touching wrapper, same
+split precedent as `app.eval.retrieval_tuning.sweep.run_sweep`/
+`run_full_ablation` and `app.eval.model_ablation.ablation.run_ablation`/
+`run_full_ablation` — see each module's own test file's docstring).
+
+Restructured 2026-09-23 (DEVIATIONS.md #201): Level 3 is now a single
+continuous BM25/SapBERT weighted-rank-fusion sweep — MedCPT/RRF are gone,
+`recall_at_k` is the new primary metric field."""
 
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ import pytest
 from app.config import get_settings
 from app.eval.ablation_config import ALL_ARMS
 from app.eval.model_ablation.ablation import _l2_normalize_rows, fetch_corpus
-from app.eval.model_ablation.encoders import get_medcpt_encoders, get_sapbert_encoder
+from app.eval.model_ablation.encoders import get_sapbert_encoder
 from app.eval.retrieval_tuning.sweep import SweepQuestion
 from app.eval.unified_ablation.per_query import PerQueryResult
 from app.eval.unified_ablation.runner import sweep_questions
@@ -45,12 +49,10 @@ def _stub_backends(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RERANKER_BACKEND", "stub")
     monkeypatch.setenv("MODEL_ABLATION_BACKEND", "stub")
     # Small grid: keeps the exact-row-count assertions below readable.
-    # bm25 has no alpha dimension (1 fixed value); the 3 dense arms each get
-    # both configured alphas -> 1 + 2 + 2 + 2 = 7 arm-alpha combos per
-    # (level1, level2) pair, x 2 k-values x 4 (level1 x level2) pairs = 56
-    # rows for one question.
+    # 4 (level1 x level2) x 2 bm25_weight values x 2 k values = 16 rows for
+    # one question -- no more arm branching, Level 3 is one sweep now.
     monkeypatch.setenv("ABLATION_K_VALUES", "2,4")
-    monkeypatch.setenv("ABLATION_ALPHA_VALUES", "0.0,1.0")
+    monkeypatch.setenv("ABLATION_BM25_WEIGHT_VALUES", "0.0,1.0")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -84,9 +86,7 @@ def _sweep(
 ) -> list[PerQueryResult]:
     corpus = fetch_corpus(store)
     sapbert_encoder = get_sapbert_encoder()
-    medcpt_query_encoder, medcpt_article_encoder = get_medcpt_encoders()
     sapbert_matrix = _l2_normalize_rows(np.asarray(sapbert_encoder.encode(corpus.texts)))
-    medcpt_matrix = _l2_normalize_rows(np.asarray(medcpt_article_encoder.encode(corpus.texts)))
     return list(
         sweep_questions(
             questions,
@@ -94,8 +94,6 @@ def _sweep(
             corpus,
             sapbert_encoder=sapbert_encoder,
             sapbert_chunk_matrix=sapbert_matrix,
-            medcpt_query_encoder=medcpt_query_encoder,
-            medcpt_chunk_matrix=medcpt_matrix,
             record_index=record_index,
             vocabulary=vocabulary,
             experiment_id="exp-1",
@@ -114,10 +112,10 @@ def test_sweep_produces_exactly_the_expected_row_count_for_one_question(
         source_record_id=RECORD_ID,
     )
     rows = _sweep(store, questions=[question], record_index={RECORD_ID: RECORD})
-    assert len(rows) == 56  # see the grid comment in _stub_backends above
+    assert len(rows) == 16  # see the grid comment in _stub_backends above
 
 
-def test_sweep_covers_all_16_arms_and_both_level1_level2_conditions(
+def test_sweep_covers_all_4_arms_and_both_level1_level2_conditions(
     store: QdrantVectorStore,
 ) -> None:
     question = SweepQuestion(
@@ -143,7 +141,7 @@ def test_question_with_no_resolvable_source_record_is_skipped(store: QdrantVecto
     assert rows == []
 
 
-def test_bm25_arm_rows_always_carry_the_fixed_pure_bm25_alpha(store: QdrantVectorStore) -> None:
+def test_sweep_covers_both_configured_bm25_weight_values(store: QdrantVectorStore) -> None:
     question = SweepQuestion(
         question_id="q1",
         text="ignored",
@@ -151,9 +149,7 @@ def test_bm25_arm_rows_always_carry_the_fixed_pure_bm25_alpha(store: QdrantVecto
         source_record_id=RECORD_ID,
     )
     rows = _sweep(store, questions=[question], record_index={RECORD_ID: RECORD})
-    bm25_rows = [r for r in rows if r.level3_condition == "bm25"]
-    assert bm25_rows  # non-empty
-    assert all(r.alpha == 1.0 for r in bm25_rows)
+    assert {r.bm25_weight for r in rows} == {0.0, 1.0}
 
 
 def test_present_only_and_all_assessed_produce_different_query_text(
@@ -176,7 +172,7 @@ def test_present_only_and_all_assessed_produce_different_query_text(
     assert any("did NOT have convulsions" in t for t in all_assessed_texts)
 
 
-def test_reciprocal_rank_at_k_and_first_relevant_rank_are_consistent(
+def test_recall_and_reciprocal_rank_and_first_relevant_rank_are_consistent(
     store: QdrantVectorStore,
 ) -> None:
     question = SweepQuestion(
@@ -187,10 +183,13 @@ def test_reciprocal_rank_at_k_and_first_relevant_rank_are_consistent(
     )
     rows = _sweep(store, questions=[question], record_index={RECORD_ID: RECORD})
     for row in rows:
-        if row.first_relevant_rank is not None and row.first_relevant_rank <= row.k:
-            assert row.reciprocal_rank_at_k == pytest.approx(1.0 / row.first_relevant_rank)
+        rank = row.first_relevant_rank
+        if rank is not None and rank <= row.k:
+            assert row.reciprocal_rank_at_k == pytest.approx(1.0 / rank)
+            assert row.recall_at_k == pytest.approx(1.0)  # single gold chunk -> 0.0 or 1.0
         else:
             assert row.reciprocal_rank_at_k == 0.0
+            assert row.recall_at_k == pytest.approx(0.0)
         assert row.relevant_ids == ["gold-chunk"]
         assert len(row.retrieved_ids) <= row.k
 
@@ -215,5 +214,5 @@ def test_multiple_questions_each_produce_their_own_full_row_set(store: QdrantVec
     rows = _sweep(
         store, questions=questions, record_index={RECORD_ID: RECORD, record_id_2: record_2}
     )
-    assert len(rows) == 112  # 56 rows x 2 questions
+    assert len(rows) == 32  # 16 rows x 2 questions
     assert {r.query_id for r in rows} == {"q1", "q2"}
