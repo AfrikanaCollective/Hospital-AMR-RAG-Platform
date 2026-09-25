@@ -243,10 +243,12 @@ class Settings(BaseSettings):
     ablation_k_values: str = "2,4,6,8,10,12,14,16,18,20"  # 2..20 step 2
     # Renamed from `ablation_alpha_values`/`ABLATION_ALPHA_VALUES` (operator
     # request 2026-09-23, DEVIATIONS.md #201: "alpha" -> "weighted rank",
-    # w_BM25) -- 11 points at 0.1 granularity, up from 6 at 0.2 (the old
-    # default). Level 3 is now a single BM25/SapBERT weighted-rank-fusion
+    # w_BM25). Level 3 is a single BM25/SapBERT weighted-rank-fusion
     # sweep (MedCPT and RRF fusion dropped entirely, not just excluded).
-    ablation_bm25_weight_values: str = "0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"
+    # 6 points at 0.2 granularity (operator request 2026-09-25,
+    # DEVIATIONS.md #207, proposal §14) -- was 11 points at 0.1 from
+    # 2026-09-23 (#201).
+    ablation_bm25_weight_values: str = "0.0,0.2,0.4,0.6,0.8,1.0"
     ablation_mrr_k: int = 12  # matches retrieval_tuning.sweep's settled value (DEVIATIONS #183)
     # Target count for `app.eval.auto_seed.run_ablation_holdout_generation`
     # (DEVIATIONS.md #199, operator request 2026-09-23) -- a de-identified

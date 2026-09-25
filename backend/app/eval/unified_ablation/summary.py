@@ -289,7 +289,8 @@ def summarize_level3_by_weight_and_k(
 ) -> list[WeightKPoint]:
     """recall@k (or MRR@k) for EVERY (`bm25_weight`, `k`) combination
     (DEVIATIONS.md #202, operator request 2026-09-23: "Recall @ k for k
-    range between 2 and 20... for each of the following [11 weights]") —
+    range between 2 and 20... for each of the following [weights]" — 6 since
+    DEVIATIONS.md #207, 11 when written) —
     the full grid, not collapsed to one headline `k`. Pooled across Level 1
     x Level 2 (same pooling convention as every other comparison in this
     module, proposal §4 point 4, extended here): Level 3 doesn't vary L1/L2,

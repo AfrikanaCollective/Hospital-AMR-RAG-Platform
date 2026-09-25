@@ -55,13 +55,12 @@ def test_level3_conditions_has_exactly_one_value() -> None:
     assert set(LEVEL3_CONDITIONS) == {"bm25_sapbert"}
 
 
-def test_bm25_weight_values_has_eleven_points_at_0_1_granularity() -> None:
-    """w_BM25 in {0.0, 0.1, ..., 1.0} (operator request 2026-09-23) -- up
-    from 6 points at 0.2 granularity."""
+def test_bm25_weight_values_has_six_points_at_0_2_granularity() -> None:
+    """w_BM25 in {0.0, 0.2, 0.4, 0.6, 0.8, 1.0} (operator request
+    2026-09-25, DEVIATIONS.md #207 / proposal §14) -- down from 11 points
+    at 0.1 granularity (#201)."""
     values = bm25_weight_values()
-    assert len(values) == 11
-    assert values[0] == pytest.approx(0.0)
-    assert values[-1] == pytest.approx(1.0)
+    assert values == pytest.approx((0.0, 0.2, 0.4, 0.6, 0.8, 1.0))
 
 
 def test_k_values_and_bm25_weight_values_and_mrr_k_are_settings_driven_not_hardcoded(

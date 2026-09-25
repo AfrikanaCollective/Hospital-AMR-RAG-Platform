@@ -15,6 +15,21 @@ results/ablation/<run_id>/
 └── unified_ablation_report.png  # combined 3-panel summary (Level 1/2/3)
 ```
 
+Optional supplementary figure (reads only `per_query_results.jsonl`;
+`make recall-by-bm25-weight-plot [RUN_ID=<run_id>]` from the repo root, or):
+`python -m scripts.plot_recall_by_bm25_weight results/ablation/<run_id>`
+writes `recall_at_k_by_bm25_weight.png` (18 x 18 cm, 300 dpi) — mean
+Recall@K vs K, one line per BM25 weight, faceted over the four
+Level-1 x Level-2 arms.
+`python -m scripts.plot_recall_vs_bm25_weight_by_k results/ablation/<run_id>
+[--k-values 8,10,12,14]` (or `make recall-vs-bm25-weight-by-k-plot
+[RUN_ID=<run_id>] [K_VALUES=8,10,12,14]` from the repo root) writes `recall_at_k_vs_bm25_weight_by_k.png` (same
+size/dpi/facets): Recall@K vs. BM25 weight, one line per K.
+`python -m scripts.plot_mrr_vs_bm25_weight_by_arm results/ablation/<run_id>
+[--k 12]` writes `mrr_at_k_vs_bm25_weight_by_arm.png` (18 x 18 cm,
+300 dpi, single panel): mean reciprocal rank at K vs. BM25 weight, one line
+per Level-1 x Level-2 arm, K defaulting to `ABLATION_MRR_K`.
+
 **Never committed** — `per_query_results.jsonl` can run into the hundreds
 of MB per run (a single 238-question run against this deployment's real
 16-arm × 10-k × 6-alpha grid produced 180,880 rows / 472MB — DEVIATIONS.md

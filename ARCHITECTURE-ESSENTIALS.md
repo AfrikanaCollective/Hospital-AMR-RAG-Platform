@@ -388,6 +388,10 @@ harness's own `gold_relevant_chunks` pool:
   seeing the data, compares it to `bm25_weight=1.0`) with a flagged
   winner's-curse caveat on its own CI/p-value. Persisted to a new
   `statistical_summary.json`. Report panels unchanged (DEVIATIONS.md #202).
+  **Weight grid reduced 2026-09-25** to `w_BM25 ∈ {0.0, 0.2, …, 1.0}`
+  (6 points, `ABLATION_BM25_WEIGHT_VALUES` default); grid 110 → 60 points;
+  the 1,589-question run re-derived at the new grid, not re-run
+  (DEVIATIONS.md #207, proposal §14).
 
 ---
 

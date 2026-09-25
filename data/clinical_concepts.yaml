@@ -61,7 +61,7 @@ concepts:
     operator: ">="
     value: 38.0
     source: "operator-curated"
-    synonyms: ["high body temperature", "≥ 38 °C"]
+    synonyms: ["high body temperature", "≥ 38 °C", "temperature instability", "hyperthermia"]
     notes: "neonatal, A rectal temperature (gold). armpit or ear readings (unreliable)"
 
   hypothermia:
@@ -69,7 +69,7 @@ concepts:
     operator: "<"
     value: 35.5
     source: "operator-curated"
-    synonyms: ["low body temperature", "< 35.5 °C"]
+    synonyms: ["low body temperature", "< 35.5 °C", "temperature instability"]
     notes: "neonatal, rectal temperature (gold); armpit or ear readings (unreliable)"
 
   slow capillary refill:
@@ -101,7 +101,7 @@ concepts:
     operator: "<"
     value: 90
     source: "operator-curated"
-    synonyms: ["hypoxemia"]
+    synonyms: ["hypoxemia", "SPO2 < 90%"]
     notes: "Pulse oximetry less than 90% in newborns"
 
   # Based on baby's demographics
@@ -160,7 +160,7 @@ concepts:
     field: maternal_risk_factors.maternal_infection
     operator: "present"
     source: "operator-curated"
-    synonyms: ["maternal sepsis", "chorioamnionitis"]
+    synonyms: ["maternal sepsis", "chorioamnionitis", "maternal fever"]
     notes: "maternal-history sign, not the newborn's own examination_findings"
 
   prom:
@@ -188,6 +188,20 @@ concepts:
     field: examination_findings.difficulty_feeding
     operator: "present"
     source: "operator-curated"
-    synonyms: ["difficulty feeding", "not feeding well"]
+    synonyms: ["difficulty feeding", "not feeding well", "poor feeding"]
+    notes: "fires only when difficulty feeding was assessed and present"
+
+  bulging_fontanelle:
+    field: examination_findings.bulging_fontanelle
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["bulging anterior fontanelle"]
+    notes: "fires only when difficulty feeding was assessed and present"
+
+  indrawing:
+    field: examination_findings.indrawing
+    operator: "present"
+    source: "operator-curated"
+    synonyms: ["in-drawing"]
     notes: "fires only when difficulty feeding was assessed and present"
 

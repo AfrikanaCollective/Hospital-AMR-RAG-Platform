@@ -572,10 +572,12 @@ signs; vocabulary-enriched vs. raw query). **Level 3 is a single
 continuous BM25/SapBERT weighted-rank-fusion sweep**:
 
 ```
-w_BM25 ∈ {0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0}
+w_BM25 ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}
 ```
 
-11 points at 0.1 granularity (up from the original 6 at 0.2). `w_BM25 =
+6 points at 0.2 granularity (**revised 2026-09-25, §14** — this section
+originally specified 11 points at 0.1 granularity, itself up from the
+original 6 at 0.2; the grid is now back to 0.2). `w_BM25 =
 0.0` is pure SapBERT, `w_BM25 = 1.0` is pure BM25 — the same
 `retrieval_tuning.offline_fusion.weighted_rank` formula every prior
 design already used, just no longer branched by named "arm identity."
@@ -620,8 +622,9 @@ request; only `unified_ablation`'s own call site renamed the concept.
 Level 3 no longer has a "reference arm" to compare others against — it's
 one continuous parameter. `summarize_level3`/`summarize_level3_mechanism`
 (§11) are both replaced by `summarize_level3_curve`: one `Level3Curve` per
-Level-1×Level-2 slice (4 total), each holding the full 11-point recall@k
-curve plus a paired-bootstrap delta between the sweep's two endpoints
+Level-1×Level-2 slice (4 total), each holding the full recall@k curve over
+every `bm25_weight` (6 points since §14; 11 when written) plus a
+paired-bootstrap delta between the sweep's two endpoints
 (`bm25_weight=1.0` vs. `bm25_weight=0.0`) as the headline number — the
 natural replacement for "arm vs. reference" now that there's no reference.
 
@@ -655,7 +658,7 @@ Same day as §12's restructuring, the operator specified the exact
 statistical comparisons required, at minimum, across all ablation
 conditions: paired Δ Recall@K with a 95% CI **and a p-value** for Level 1
 and Level 2; the full Recall@k curve (k ∈ {2,4,...,20}) for every one of
-Level 3's 11 `bm25_weight` values, with CIs; and an explicit test of
+Level 3's `bm25_weight` values (11 when written; 6 since §14), with CIs; and an explicit test of
 "whether BM25 weighting helps at all," comparing the single best-performing
 weight (chosen **after seeing the data**, at a single k also chosen after
 seeing the data) against plain BM25 (`bm25_weight=1.0`) — with the
@@ -681,8 +684,9 @@ restructuring beyond the helper swap.
 ### 13.2 The full Level 3 grid
 
 `summarize_level3_by_weight_and_k(rows, *, k_values, weight_values, ...)`
-returns one `WeightKPoint` per (`bm25_weight`, `k`) pair — 110 points at
-the default 11-weight × 10-k config — **pooled across Level 1 × Level 2**.
+returns one `WeightKPoint` per (`bm25_weight`, `k`) pair — 60 points at
+the default 6-weight × 10-k config (110 at the 11-weight grid in force when
+this was written; see §14) — **pooled across Level 1 × Level 2**.
 This pooling is a judgment call, not explicitly confirmed with the
 operator before implementing (flagged per `DEVIATIONS.md`'s own
 append-the-moment-a-call-is-made convention): Level 3 doesn't itself vary
@@ -751,3 +755,42 @@ directly for structure and spot-checked by value. The pre-existing 3-panel
 report re-rendered and visually re-inspected — no layout regressions, as
 expected since `report.py` was not touched. Full account: DEVIATIONS.md
 #202.
+
+## 14. Level 3 weight grid reduced to 0.2 granularity (2026-09-25, DEVIATIONS.md #207) — amends §12.1
+
+The operator revised the Level 3 weighted-rank-fusion sweep to:
+
+```
+w_BM25 ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}
+```
+
+6 points instead of §12.1's 11. Both endpoints (pure SapBERT at 0.0, pure
+BM25 at 1.0) are kept, so §12.4's endpoints delta and §13.3's
+best-weight-vs-BM25 comparison keep the same meaning. §13.2's pooled grid
+shrinks from 110 to 60 (weight, k) points, and §13.3's post-hoc selection
+now picks the best of 6 empirical means instead of 11 (a smaller
+multiple-comparisons penalty, though the winner's-curse caveat still
+applies).
+
+The design is otherwise unchanged: Level 1/2 conditions, the K grid
+(2–20 step 2), the headline `k` (`mrr_k()=12`), the primary metric
+(Recall@K) and the fusion formula. The Level 1 and Level 2 *numbers* do
+change, though: both deltas are pooled over `bm25_weight` (§4 point 4's
+marginalization convention), so they now average over 6 weights instead
+of 11.
+The grid is still config-driven — `ABLATION_BM25_WEIGHT_VALUES`, whose
+default in `app/config.py` is now `0.0,0.2,0.4,0.6,0.8,1.0`.
+
+**Existing run re-derived, not re-run.** The new grid is a strict subset
+of the old one, so run `20260925T064650Z-81570c93`'s per-query rows at
+the six retained weights are exactly what a fresh run at the new grid
+would produce (retrieval and scoring are deterministic per weight;
+bootstrap resampling uses the fixed seed). One side effect:
+`summarize_level3_curve` draws every per-weight CI and then the endpoints
+delta from a single shared RNG. With fewer weights the endpoints delta
+gets a different part of the random stream, so its CI bounds moved by
+about 0.0002 while its point estimate stayed identical. Its `statistical_summary.json`,
+`unified_ablation_report.png` and `recall_at_k_by_bm25_weight.png` were
+regenerated from those rows only. `per_query_results.jsonl` and
+`configuration.json` are left as the untouched record of what actually
+ran (11 weights).

@@ -2,14 +2,19 @@
 COMPOSE ?= docker compose
 PROFILE ?= dev
 BE      ?= cd backend &&
+# Shell snippet for the ablation plot targets: sets $$run_id to RUN_ID, or to
+# the latest run under backend/results/ablation/ (run ids sort by timestamp).
+RESOLVE_ABLATION_RUN = run_id="$(RUN_ID)"; \
+  if [ -z "$$run_id" ]; then run_id=$$(ls -1d results/ablation/*/ 2>/dev/null | sort | tail -n 1 | xargs -r basename); fi; \
+  if [ -z "$$run_id" ]; then echo "no run under backend/results/ablation/ — run 'make unified-ablation-report' first" >&2; exit 1; fi;
 
 .PHONY: help up down logs build migrate seed gen-data ingest-deid \
         prepare-guidelines fetch-guidelines test lint typecheck eval fmt lock \
         retrieval-tuning-report model-ablation-report orchestration-ablation-report \
-        unified-ablation-report
+        unified-ablation-report recall-by-bm25-weight-plot recall-vs-bm25-weight-by-k-plot
 
 help:
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}{printf "  %-18s %s\n", $$1, $$2}'
 
 up: ## start the dev compose stack
@@ -77,3 +82,10 @@ orchestration-ablation-report: ## Phase 7 single-stage/criteria-reuse/vocabulary
 
 unified-ablation-report: ## Unified Level 1/2/3 hierarchical ablation (16 arms x alpha x K) -> results/ablation/<run_id>/ + 3-panel PNG report (PRD-112/ARCH-043); needs real Qdrant+Postgres+seeded eval questions; Level 2 enrichment needs an attested data/clinical_concepts.yaml; set MODEL_ABLATION_BACKEND=local for real (non-stub) models
 	$(BE) pip install -q -e ".[retrieval-tuning,local-models]" && python -m scripts.run_unified_ablation
+
+recall-by-bm25-weight-plot: ## Recall@K x BM25-weight 2x2 facet PNG (18x18cm @ 300dpi) from an existing unified-ablation run's per_query_results.jsonl; RUN_ID=<run_id> (default: latest under backend/results/ablation/); no pip install — needs pandas+seaborn in the active env (the `retrieval-tuning` extra)
+	$(BE) $(RESOLVE_ABLATION_RUN) python -m scripts.plot_recall_by_bm25_weight "results/ablation/$$run_id"
+
+K_VALUES ?= 8,10,12,14
+recall-vs-bm25-weight-by-k-plot: ## Recall@K vs BM25-weight, one line per K, 2x2 facet PNG (18x18cm @ 300dpi) from an existing unified-ablation run; RUN_ID=<run_id> (default: latest), K_VALUES=8,10,12,14 (default); no pip install — needs pandas+seaborn in the active env
+	$(BE) $(RESOLVE_ABLATION_RUN) python -m scripts.plot_recall_vs_bm25_weight_by_k "results/ablation/$$run_id" --k-values "$(K_VALUES)"

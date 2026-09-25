@@ -1492,6 +1492,16 @@ alongside the existing `configuration.json`/`per_query_results.jsonl`.
 reproducibility snapshot: `TRACEABILITY.md`'s `PRD-112` row; DEVIATIONS.md
 #192–#202.
 
+**Weight grid reduced 2026-09-25** (operator request, DEVIATIONS.md #207,
+UNIFIED-ABLATION-PROPOSAL.md §14): Level 3 now sweeps
+`w_BM25 ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}` (6 points; the
+`ABLATION_BM25_WEIGHT_VALUES` default). Both endpoints are kept, so the
+endpoints delta and the best-weight-vs-BM25 test keep their meaning; the
+full grid is 60 points instead of 110, and Level 1/2 deltas (pooled over
+the weight grid) now average over 6 weights. The 1,589-question run's
+summary and figures were re-derived from its rows at the 6 retained
+weights rather than re-run.
+
 ---
 
 ## 17. Security & compliance model

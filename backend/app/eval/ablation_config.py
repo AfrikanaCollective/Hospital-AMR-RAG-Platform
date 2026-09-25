@@ -3,7 +3,8 @@ ablation (PRD-112 / ARCH-043; UNIFIED-ABLATION-PROPOSAL.md §3.4, §3.6, §12).
 
 **Restructured 2026-09-23 (operator request, DEVIATIONS.md #201)**: Level 3
 is now a single continuous weighted-rank-fusion sweep between BM25 and
-SapBERT only — `w_BM25 ∈ {0.0, 0.1, ..., 1.0}` (11 points) — not a set of
+SapBERT only — `w_BM25 ∈ {0.0, 0.2, ..., 1.0}` (6 points since 2026-09-25,
+DEVIATIONS.md #207; 11 points at 0.1 before that) — not a set of
 distinct named arms. MedCPT and RRF fusion (proposal §11, Option B) are
 both dropped entirely, not merely excluded from the default sweep; that
 code has been removed, not deprecated in place. `AblationArm.level3` is
@@ -14,7 +15,7 @@ configuration is still `(level1, level2, level3)`, level3 just no longer
 varies.
 
 `ALL_ARMS` is 4 leaf configurations (2 Level-1 x 2 Level-2 x 1 Level-3),
-each swept across all 11 `bm25_weight` values and the full `k` grid — 44
+each swept across all 6 `bm25_weight` values and the full `k` grid — 24
 (level1, level2, bm25_weight) combinations total, `len(k_values())` rows
 each.
 
